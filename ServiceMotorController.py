@@ -1,40 +1,37 @@
 # MotorController
-import sys
+import math
 
 from serial import Serial, SerialException
 import serial.tools.list_ports as list_ports
-import pandas as pd
 import time
 from collections import defaultdict, deque
-import numpy as np
 import json
 import threading
-from serial_port_read_pid import PID_STRUCT_SIZE
 from sys import exit
 import os
-import collections
 from datetime import datetime
 import traceback
 
-from proto.fcm_pb_transport import FcmPbTransport
-from proto.mcu_pb_transport import McuPbTransport
-from proto.transport_stream import FcmUsbStream, McuUsbStream
-import proto.fcm_commands_pb2 as FcmCommandMsg
-import proto.fcm_responses_pb2 as FcmResponseMsg
-import proto.mcu_commands_pb2 as CommandMsg
-import proto.mcu_responses_pb2 as ResponseMsg
-import proto.cli_common_pb2 as MsgValues
+from fcm.fcm_pb_transport import FcmPbTransport
+from mcu_pb_transport import McuPbTransport
+from transport_stream import FcmUsbStream, McuUsbStream
+import fcm.fcm_commands_pb2 as FcmCommandMsg
+import mcu_commands_pb2 as CommandMsg
+import cli_common_pb2 as MsgValues
 
 response_codes = {"OK", "FAIL", "INVALID_COMMAND", "INVALID_PARAMETER", "INVALID_STATE", "REPEATED_OUTPUT"}
+logger = None
+McuTypes = json.load(open('mcu_cli_specification.json', 'r'))
+
 
 def get_datetime_string() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 class MotorController:
-    SCI1_BAUD_RATE = 115200         # Main MCU/HCU rate
-    SCI_TIME_OUT = 2               # seconds
-    SCI5_BAUD_RATE = 115200        # SCI5 debug port rate
+    SCI1_BAUD_RATE = 115200  # Main MCU/HCU rate
+    SCI_TIME_OUT = 2  # seconds
+    SCI5_BAUD_RATE = 115200  # SCI5 debug port rate
     USB_PDC_BAUD_RATE = 115200
     SCI5_TIME_OUT = 1  # seconds
 
@@ -75,38 +72,12 @@ class MotorController:
         print("Set output directory:", self._output_dir)
         print("MCU log filename", log_filename)
 
-        if main_com is None or main_com == "":
-            # only lookup if the optional port is not defined
-            main_com = self.find_ftdi_port()
-            if main_com == "":
-                print("ERROR cannot find an FTDI port for MCU communication")
-                exit(1)
-        print("Use %s as the main COM port" % main_com)
-        self._main_port_name = main_com
-
-        # try:
-        #     self._main_serial = Serial(self._main_port_name, baudrate=self.SCI1_BAUD_RATE, timeout=self.SCI_TIME_OUT)
-        # except FileNotFoundError as e:
-        #     print("Exception while open the serial port", e)
-        #     traceback.print_exception(e)
-        #     self._main_serial = None
-        #     exit(1)
-        #
-        # self._is_open = self._main_serial is not None
-        #
-        # if self._is_open:
-        #     # clear the input buffer first
-        #     line = self._main_serial.read_all()
-        #     self._main_serial.reset_input_buffer()
-        #     if len(line):
-        #         print("Connecting with")
-        #         print(line)
-
         try:
-            self.mcu_stream = McuUsbStream()
-            self.fcm_stream = FcmUsbStream()
-            self.mcu_transport = McuPbTransport(self.mcu_stream)
-            self.fcm_transport = FcmPbTransport(self.fcm_stream)
+            self.mcu_stream = McuUsbStream(logging=logger)
+            self.fcm_stream = FcmUsbStream(logging=logger)
+            self.mcu_stream.open(logging=logger)
+            self.mcu_transport = McuPbTransport(logger, self.mcu_stream)
+            self.fcm_transport = FcmPbTransport(logger, self.fcm_stream)
         except FileNotFoundError as e:
             print("Error")
             traceback.print_exception(e)
@@ -114,7 +85,25 @@ class MotorController:
 
         self._monitor_port_name = debug_com
 
-    def get_port_by_name(name: str) -> str:
+    def get_filename_from_current_timestamp(self, prefix="", postfix="", is_dir=False) -> str:
+        """ Get an absolute filename from the current timestamp (yyyymmdd-hhmmss) with optional prefix or post-fix,
+        if the name is a directory it will be created
+        """
+        dt_str = get_datetime_string()
+
+        if len(prefix):
+            dt_str = prefix + dt_str
+
+        if len(postfix):
+            dt_str = dt_str + postfix
+
+        out_name = os.path.join(self._output_dir, dt_str)
+        if is_dir and not os.path.exists(out_name):
+            os.mkdir(out_name)
+
+        return out_name
+
+    def get_port_by_name(self, name: str) -> str:
         # noinspection SpellCheckingInspection
         for i, (port, desc, hwid) in enumerate(sorted(list_ports.comports())):
             # print("usb", name, desc)
@@ -141,7 +130,7 @@ class MotorController:
     def set_main_com_verbose(self, verbose: bool):
         self._main_com_verbose = verbose
 
-    #threading code
+    # threading code
     def read_line(self, wait: bool = True) -> str:
         """
         waiting for the main comm thread to read a line
@@ -225,15 +214,16 @@ class MotorController:
 
         # want timeout every second so we stop the thread quickly
         try:
-            self._monitor_log_file = monitor_file   # open(output_filename, "wb")
-            self._monitor_serial = Serial(self._monitor_port_name, baudrate=self.SCI5_BAUD_RATE, timeout=self.SCI5_TIME_OUT)
+            self._monitor_log_file = monitor_file  # open(output_filename, "wb")
+            self._monitor_serial = Serial(self._monitor_port_name, baudrate=self.SCI5_BAUD_RATE,
+                                          timeout=self.SCI5_TIME_OUT)
         except SerialException as e:
             print("Exception while open monitor port", e)
             traceback.print_exception(e)
             self._monitor_serial = None
             self._stop_monitor = True
             if self._main_comm_thread is not None:
-                self._main_comm_thread.join()     # thread.join
+                self._main_comm_thread.join()  # thread.join
 
             if self._monitor_log_file:
                 self._monitor_log_file.close()
@@ -266,8 +256,8 @@ class MotorController:
         self._monitor_serial.reset_input_buffer()
         print("SKIP: DONE!")
         self._main_serial.read_all()
-        self._monitor_com_thread = threading.Thread(target=self._monitor_thread_function)
-        self._monitor_com_thread.start()
+        # self._monitor_com_thread = threading.Thread(target=self._monitor_thread_function)
+        # self._monitor_com_thread.start()
         print("Debug port is ready")
         return True
 
@@ -284,56 +274,87 @@ class MotorController:
             self._main_comm_thread.join()
             print("The main thread has stopped")
 
-    def _monitor_thread_function(self):
-        """
-        This function read PID debug data from the monitor port (prefer USB PDC over USB serial)
-        """
-        # read the response
-        print("Monitor Thread start")
-        block_size_as_byte_array = bytearray([PID_STRUCT_SIZE])
+    # def _monitor_thread_function(self):
+    #     """
+    #     This function read PID debug data from the monitor port (prefer USB PDC over USB serial)
+    #     """
+    #     # read the response
+    #     print("Monitor Thread start")
+    #     block_size_as_byte_array = bytearray([PID_STRUCT_SIZE])
+    #
+    #     # temporary need to write this twice to ensure handler process it
+    #     text = Command("PIDdebug all 1\r").get_command()
+    #     self._monitor_serial.write(bytearray(text, encoding='utf-8'))
+    #     while True:
+    #         # read until we see data must be  PID_STRUCT_SIZE
+    #         while True:
+    #             # read a byte and expect PID_STRUCT_SIZE
+    #             # if time out read return none.
+    #             try:
+    #                 data = self._monitor_serial.read(size=1)
+    #             except SerialException as e:
+    #                 print("ERROR: serial exception", e)
+    #                 self._stop_monitor = True
+    #                 # exit(1)   # todo is this too much
+    #                 break  # the inner while loop
+    #
+    #             if self._stop_monitor:
+    #                 # write a char to stop the monitoring
+    #                 self._monitor_serial.write(bytearray("\r", encoding='utf-8'))
+    #                 break
+    #             if self._monitor_log_file and data is not None:
+    #                 self._monitor_log_file.write(data)  # write the error byte
+    #             if data == block_size_as_byte_array:
+    #                 break   # got the byte
+    #             # skip the wrong size byte
+    #             # if len(data) >= 1:
+    #             #  print("Error byte %0x" % data[0])
+    #
+    #         if self._stop_monitor:
+    #             break  # stop it.
+    #
+    #         data = self._monitor_serial.read(size=PID_STRUCT_SIZE - 1)
+    #         if self._monitor_log_file and data is not None:
+    #             self._monitor_count += 1
+    #             self._monitor_log_file.write(data)
+    #
+    #         if self._stop_monitor:
+    #             break
+    #
+    #     # self._Monitor.write(bytearray("\r", encoding='utf-8'))
+    #
+    #     print("Monitor Thread end")
 
-        # temporary need to write this twice to ensure handler process it
-        text = Command("PIDdebug all 1\r").get_command()
-        self._monitor_serial.write(bytearray(text, encoding='utf-8'))
-        while True:
-            # read until we see data must be  PID_STRUCT_SIZE
-            while True:
-                # read a byte and expect PID_STRUCT_SIZE
-                # if time out read return none.
-                try:
-                    data = self._monitor_serial.read(size=1)
-                except SerialException as e:
-                    print("ERROR: serial exception", e)
-                    self._stop_monitor = True
-                    # exit(1)   # todo is this too much
-                    break  # the inner while loop
+    def find_alarm_bitmap(self, bitmap):
+        alarm_list = []
+        alarm_name_list = []
+        alarm_str = bitmap
+        all_alarms = MsgValues.Alarm.items()
 
-                if self._stop_monitor:
-                    # write a char to stop the monitoring
-                    self._monitor_serial.write(bytearray("\r", encoding='utf-8'))
-                    break
-                if self._monitor_log_file and data is not None:
-                    self._monitor_log_file.write(data)  # write the error byte
-                if data == block_size_as_byte_array:
-                    break   # got the byte
-                # skip the wrong size byte
-                # if len(data) >= 1:
-                #  print("Error byte %0x" % data[0])
+        # The maximum number of alarms triggered is the distance of the msb bit in the alarm integer
+        # Add one just in case an alarm is missed
+        number_of_alarms = math.ceil(math.log2(alarm_str)) + 1
+        for alarm in range(number_of_alarms):
+            if alarm_str & (1 << alarm) != 0:
+                alarm_list.append(alarm)
+        # print(alarm_list)
+        if len(all_alarms) > 0:
+            i = 0
+            for alarm, alarm_number in all_alarms:
+                if alarm_number in alarm_list:
+                    alarm_name_list.append(alarm)
+                i += 1
+            return ', '.join(alarm_name_list)
+        else:
+            return ""
 
-            if self._stop_monitor:
-                break  # stop it.
-
-            data = self._monitor_serial.read(size=PID_STRUCT_SIZE - 1)
-            if self._monitor_log_file and data is not None:
-                self._monitor_count += 1
-                self._monitor_log_file.write(data)
-
-            if self._stop_monitor:
-                break
-
-        # self._Monitor.write(bytearray("\r", encoding='utf-8'))
-
-        print("Monitor Thread end")
+    def find_hardware_bitmap(self, bits):
+        data = list(filter(lambda t: t['name'] == "HardwareSignal", McuTypes['support_types']))[0]['categorical_values']
+        bitmap = []
+        for i in range(0, 32):
+            if bits & 1 << i != 0:
+                bitmap.append(data[i]['name'])
+        return ', '.join(bitmap)
 
     def _get_digest(self):
         digest = CommandMsg.DIGEST_Command()
@@ -344,7 +365,7 @@ class MotorController:
     def _print_digest(self):
         print(self._get_digest())
 
-    def update_digest(self,delay=0.1, verbose=False):
+    def update_digest(self):
         try:
             self.last_digest_data = self._get_digest()
         except:
@@ -358,10 +379,12 @@ class MotorController:
         return ''.join(MsgValues.SyringeState.Name(int(syringe_state)).split("_")[2:])
 
     def s_push_c_pull(self, motor):
-        #TODO
+        # TODO
         self.update_digest()
 
-        if (self.last_digest_data.flush_syringe_state == MsgValues.SyringeState.PROCESSING or self.last_digest_data.contrast_syringe_state
+        if (
+                self.last_digest_data.flush_syringe_state == MsgValues.SyringeState.PROCESSING
+                or self.last_digest_data.contrast_syringe_state
                 == 'PROCESSING'):
             print("ERROR: Either motors are still busy")
             return False
@@ -374,13 +397,12 @@ class MotorController:
             print("does not have a flush plunger")
             return False
 
-        if self.get_syringe_volume(motor) <= self.get_syringe_volume(motor%2 + 1):
+        if self.get_syringe_volume(motor) <= self.get_syringe_volume(motor % 2 + 1):
             print("ERROR: need push motor to have more volume than pull motor", self.get_syringe_volume(motor),
-                  self.get_syringe_volume(motor%2 + 1))
+                  self.get_syringe_volume(motor % 2 + 1))
             return False
 
-
-    def stop(self,  verbose: bool):
+    def stop(self, verbose: bool):
         if verbose:
             print("Stopping")
 
@@ -419,12 +441,12 @@ class MotorController:
 
     def motor_up(self, motor: int, direction: int, volume: int, speed: int, verbose: bool):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 if direction > 0:
                     print("Executing flush_up")
                 elif direction < 0:
                     print("Executing flush_down")
-            if motor == 2:
+            if motor == 1:
                 if direction > 0:
                     print("Executing contrast_up")
                 elif direction < 0:
@@ -432,14 +454,14 @@ class MotorController:
 
         command = CommandMsg.PISTON_Command()
         command.motor = motor
-        command.speed_x10 = int(speed*direction)
+        command.speed_x10 = int(speed * direction)
         command.volume_x10 = int(volume)
         command_data = self.mcu_transport.send_piston(command)
         return command_data
 
     def find_plunger(self, motor: int, speed: int, verbose: bool):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 print("Executing find_plunger flush")
             else:
                 print("Executing find_plunger contrast")
@@ -447,7 +469,7 @@ class MotorController:
         command = CommandMsg.FIND_PLUNGER_Command()
         command.speed_x10 = int(speed)
         command.motor = motor
-        command_data = self.mcu_transport.send_piston(command)
+        return self.mcu_transport.send_piston(command)
 
     def sys(self, verbose: bool):
         if verbose:
@@ -494,7 +516,7 @@ class MotorController:
         else:
             return self._get_digest().contrast_volume_x10
 
-    def pull_pressure_ramp(self, motor, ramp_flow_rate,  ramp_delta_pressure, initial_pressure, max_pressure,
+    def pull_pressure_ramp(self, motor, ramp_flow_rate, ramp_delta_pressure, initial_pressure, max_pressure,
                            stable_flow, stable_time):
         command = CommandMsg.PULL_PRESSURE_RAMP_Command()
         command.motor = motor
@@ -507,11 +529,12 @@ class MotorController:
         return self.mcu_transport.send_pull_pressure_ramp(command)
 
     def inject_arm(self, max_pressure: int, phase_count: int, flow_reduction_percentage: int,
-                    pressure_limit_sensitivity_percentage: int, phase_0_flow_rate_x10: int, phase_0_volume_x10: int,
+                   pressure_limit_sensitivity_percentage: int, phase_0_flow_rate_x10: int, phase_0_volume_x10: int,
                    phase_0_mix_pc: int, phase_1_flow_rate_x10: int, phase_1_volume_x10: int, phase_1_mix_pc: int,
                    phase_2_flow_rate_x10: int, phase_2_volume_x10: int, phase_2_mix_pc: int, phase_3_flow_rate_x10: int,
-    phase_3_volume_x10: int, phase_3_mix_pc: int, phase_4_flow_rate_x10: int, phase_4_volume_x10: int, phase_4_mix_pc: int,
-    phase_5_flow_rate_x10: int, phase_5_volume_x10: int, phase_5_mix_pc: int):
+                   phase_3_volume_x10: int, phase_3_mix_pc: int, phase_4_flow_rate_x10: int, phase_4_volume_x10: int,
+                   phase_4_mix_pc: int,
+                   phase_5_flow_rate_x10: int, phase_5_volume_x10: int, phase_5_mix_pc: int):
         command = CommandMsg.INJECT_ARM_Command()
         command.max_pressure_in_kpa = max_pressure
         command.phase_count = phase_count
@@ -537,7 +560,6 @@ class MotorController:
         command.phase_5_mix_pc = phase_5_mix_pc
         return self.mcu_transport.send_inject_arm(command)
 
-
     def inject_start(self):
         print("Executing injection_start")
         command = CommandMsg.INJECT_START_Command()
@@ -559,7 +581,6 @@ class MotorController:
         command.motor = motor
         return self.mcu_transport.send_piddebug(command)
 
-    #FCU COMMANDS
     def move_fcm(self, left_fill_pos: int, left_patient_pos: int, right_fill_pos: int, right_patient_pos: int):
         print("Executing move_fcm")
         command = FcmCommandMsg.FCM_MOVE_Command()
@@ -567,10 +588,4 @@ class MotorController:
         command.left_patient_pos = left_patient_pos
         command.right_fill_pos = right_fill_pos
         command.right_patient_pos = right_patient_pos
-        return fcm_transport.send_fcm_move(command)
-
-
-    def hardware_signal_decode(self):
-        data = self._get_digest()
-        hardware_bitmap = data.hardware_signal_bitmap
-        print(hardware_bitmap)
+        return self.fcm_transport.send_fcm_move(command)

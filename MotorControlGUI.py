@@ -3,10 +3,7 @@ import time
 import tkinter as tk
 from collections import deque
 
-from Test_MotorController_JZ import MotorController, get_datetime_string
-from pid_analysis import PIDAnalyser
-from serial_port_read_pid import parse_motor_pid_binary_no_struct_size, get_binary_pid_header, \
-    get_pid_name_tuple, get_pid_data_dict
+from ServiceMotorController import MotorController, get_datetime_string
 
 
 class MotorControllerApplication(tk.Frame):
@@ -39,8 +36,6 @@ class MotorControllerApplication(tk.Frame):
         self.digest_flush_current_var = tk.StringVar(self, value="current")
         self.digest_flush_plunger_var = tk.StringVar(self, value="plunger")
         self.digest_flush_plunger_adc_var = tk.StringVar(self, value="plungerADC")
-        self.digest_flush_PID_var = tk.StringVar(self, value="PID")
-        self.digest_flush_RT_PID_var = tk.StringVar(self, value="RT_PID")
         self.digest_flush_actual_speed_var = tk.StringVar(self, value="Actual.Flow")
 
         self.digest_contrast_status_var = tk.StringVar(self, value="status")
@@ -49,9 +44,7 @@ class MotorControllerApplication(tk.Frame):
         self.digest_contrast_current_var = tk.StringVar(self, value="current")
         self.digest_contrast_plunger_var = tk.StringVar(self, value="plunger")
         self.digest_contrast_plunger_adc_var = tk.StringVar(self, value="plungerADC")
-        self.digest_contrast_PID_var = tk.StringVar(self, value="PID")
         self.digest_contrast_actual_speed_var = tk.StringVar(self, value="Actual.Flow")
-        self.digest_contrast_RT_PID_var = tk.StringVar(self, value="RT_PID")
 
         self.digest_pressure_adc = tk.StringVar(self, value="pressureADC")
         self.digest_battery_level_var = tk.StringVar(self, value="battery")
@@ -63,6 +56,8 @@ class MotorControllerApplication(tk.Frame):
 
         self.digest_flush_air_vol = tk.StringVar(self, value="Air.Vol")
         self.digest_contrast_air_vol = tk.StringVar(self, value="Air.Vol")
+        self.digest_active_alarms = tk.StringVar(self, value="Active.alarms")
+        self.digest_active_hardware_signals = tk.StringVar(self, value="Active.hardware")
 
         self.mcu = mcu
         self.out_dir = out_dir
@@ -71,10 +66,8 @@ class MotorControllerApplication(tk.Frame):
 
         self._binary_queue = deque(maxlen=1000)
 
-        self._debug_headers = get_binary_pid_header().split(",")
-
         self._create_widgets()
-        self.master.after(20, self._update_binary_queue_timer)
+        # self.master.after(20, self._update_binary_queue_timer)
         self.master.after(100, self._do_digest)
 
     def _on_quit(self):
@@ -88,25 +81,6 @@ class MotorControllerApplication(tk.Frame):
             data = self._binary_queue.popleft()
             samples.append(data)
         return samples
-
-    def _update_binary_queue_timer(self):
-        samples = self.read_all_binary_queue_data()
-        if len(samples):
-            self._timer_counter += 1
-            new_data = np.array(samples).reshape((len(samples), -1))
-            self._debug_data = new_data  # Keep the last read debug data
-            # print("new length", len(self._debug_data), len(new_data))
-
-            data = samples[-1]  # get the last sample
-            pid_info = get_pid_name_tuple(data)
-            index = pid_info.MotorIndex
-            data_dict = get_pid_data_dict(data)
-
-            # Update the UI variables in motors_dicts
-            for k, str_var in self.motors_dicts[index].items():
-                value = data_dict[k]
-                str_var.set(str(value))
-        self.master.after(10, self._update_binary_queue_timer)
 
     def s_push_c_pull(self, motor, speed_gap=10, start_pressure=50, max_pressure=1000, delta_pressure=200, stable_duration=1000):
         self._do_digest()
@@ -145,11 +119,11 @@ class MotorControllerApplication(tk.Frame):
         self.mcu.pull_pressure_ramp(motor, down_speed, delta_pressure, start_pressure, max_pressure, down_speed,
                                     stable_duration)
 
-    def on_enable_debug(self, motor):
-        enable = 0
-        self.mcu.enable_debug(motor)
-        if self.plot_frame:
-            self.plot_frame.set_animation(enable)
+    # def on_enable_debug(self, motor):
+    #     enable = 0
+    #     self.mcu.enable_debug(motor)
+    #     if self.plot_frame:
+    #         self.plot_frame.set_animation(enable)
 
     def _create_widgets(self):
         frame_width = 150
@@ -259,7 +233,7 @@ class MotorControllerApplication(tk.Frame):
         tk.Button(
             left_frame, text="⬆Up.C",
             command=lambda: self.mcu.motor_up(
-                1, 1, self._volume_var.get() * 10, self._speed_var.get() * 10, True),
+                1, 1, int(self._volume_var.get() * 10), int(self._speed_var.get() * 10), True),
         ).grid(row=1, column=3)
 
         tk.Button(
@@ -303,64 +277,6 @@ class MotorControllerApplication(tk.Frame):
             command=lambda: self.mcu.fill(1, 10 * self._speed_var.get(), True)
         ).grid(row=1, column=8)
 
-        # pid_frame = tk.LabelFrame(self, width=frame_width, text="PID Data")
-        # pid_frame.grid(row=4, column=0, padx=10, pady=2, sticky='EW')
-        #
-        # debug_motor1_frame = tk.LabelFrame(pid_frame, width=frame_width, text="Contrast:")
-        # debug_motor1_frame.grid(row=0, column=0, padx=10, pady=2, sticky='EW')
-        # debug_motor2_frame = tk.LabelFrame(pid_frame, width=frame_width, text="Flush:")
-        # debug_motor2_frame.grid(row=0, column=1, padx=10, pady=2, sticky='EW')
-        # motor_frames = debug_motor1_frame, debug_motor2_frame
-        # self.motors_dicts = dict(), dict()
-
-
-        # noinspection PyShadowingNames
-        # def add_motor_entry(motor_index: int, label_name: str, data_name: str, tk_frame: tk.LabelFrame, row: int,
-        #                     col: int,
-        #                     width: int):
-        #     tk.Label(tk_frame, text=label_name).grid(row=row, column=col, sticky=tk.E)
-        #     str_var = tk.StringVar(self, value=data_name)
-        #     tk.Entry(tk_frame, textvariable=str_var, width=width, state='readonly').grid(row=row, column=col + 1)
-        #     self.motors_dicts[motor_index][data_name] = str_var
-        #
-        # for index, frame in enumerate(motor_frames):
-        #     row = 0
-        #     add_motor_entry(index, "Time:",             "T",                    frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "Lag:",              "lag",                  frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "AngleOffset:",      "AngleOffset",          frame, row=row, col=4, width=9)
-        #
-        #     row += 1
-        #     add_motor_entry(index, "Speed(mL/s):",      "Va",                   frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "Position(mL):",     "Pa",                   frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "EncoderIndex:",     "EncoderIndex",         frame, row=row, col=4, width=9)
-        #
-        #     row += 1
-        #     add_motor_entry(index, "Motor State:",      "MotorState",           frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "ProgramEnd:",       "ProgramEnd",           frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "Home:",             "Home",                 frame, row=row, col=4, width=9)
-        #     add_motor_entry(index, "HasIndex:",         "HasIndex",             frame, row=row, col=6, width=9)
-        #
-        #     row += 1
-        #     add_motor_entry(index, "PlungerADC:",       "PlungerADC",           frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "t1_adc:",           "t1_adc",               frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "current:",          "current",              frame, row=row, col=4, width=9)
-        #
-        #     row += 1
-        #     add_motor_entry(index, "PID_e",             "pid_e",                frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "PID_i:",            "pid_i",                frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "PID_d:",            "pid_d",                frame, row=row, col=4, width=9)
-        #     add_motor_entry(index, "pid:",              "pid",                  frame, row=row, col=6, width=9)
-        #
-        #     row += 1
-        #     add_motor_entry(index, "last_u:",           "last_u",               frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "Pr:",               "Pr",                   frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "effort:",           "effort",               frame, row=row, col=4, width=9)
-        #     add_motor_entry(index, "FilteredPid:",      "FilteredPid",          frame, row=row, col=6, width=9)
-        #     row += 1
-        #     add_motor_entry(index, "T1:",               "T1",                   frame, row=row, col=0, width=9)
-        #     add_motor_entry(index, "Pressure:",         "pressure",             frame, row=row, col=2, width=9)
-        #     add_motor_entry(index, "P.Pressure:",       "PredictedPressureKpa", frame, row=row, col=4, width=9)
-        #     add_motor_entry(index, "reserved:",         "reserved",             frame, row=row, col=6, width=9)
 
         # noinspection PyShadowingNames
         def create_entry(parent, text, text_var, row, col, entry_width=9, read_only=True):
@@ -418,19 +334,14 @@ class MotorControllerApplication(tk.Frame):
 
     def _on_digest(self):
         print(self._do_digest())
+        print(f"active_alarms: {self.digest_active_alarms.get()}")
+        print(f"active_hardware: {self.digest_active_hardware_signals.get()}")
+
 
 
     def _do_digest(self):
-        data = self.mcu.update_digest(verbose=self._verbose)
+        data = self.mcu.update_digest()
 
-        # digest OK Digest(alarms='', InjectProgress='IDLE', InjectCompleteState='NORMAL', InjectPressureKpa='0',
-        # ContrastSyringeStatus='Completed', ContrastVolume='0', ContrastFlow='0', ContrastMotorCurrent='0',
-        # ContrastPlungerState='Disengaged', FlushSyringeStatus='Completed', FlushVolume='-2750', FlushFlow='0',
-        # FlushMotorCurrent='112', FlushPlungerState='Disengaged',
-        # BatteryLevel='Critical', PowerSource='AC', mcu_diagnostic='')
-        # for bit in range(14):
-        # data.hardware_bitmap
-        # self.mcu.hardware_bitmap_decode
         self.digest_inject_progress_var.set(data.inject_progress)
         self.digest_inject_complete_var.set(data.inject_complete_state)
         self.digest_inject_pressure_var.set(data.inject_pressure_kpa)
@@ -457,12 +368,6 @@ class MotorControllerApplication(tk.Frame):
         self.digest_battery_level_var.set(data.battery_level)
         self.digest_pressure_adc.set(data.pressure_adc)
 
-        self.digest_flush_PID_var.set(data.flush_realtime_pid)
-        self.digest_contrast_PID_var.set(data.contrast_realtime_pid)
-
-        self.digest_flush_RT_PID_var.set(data.flush_motor_pid)
-        self.digest_contrast_RT_PID_var.set(data.contrast_motor_pid)
-
         self.digest_flush_actual_speed_var.set(data.flush_actual_speed_x100)
         self.digest_contrast_actual_speed_var.set(data.contrast_actual_speed_x100)
 
@@ -471,7 +376,8 @@ class MotorControllerApplication(tk.Frame):
 
         self.digest_flush_air_flow.set(data.flush_air_speed_x100)
         self.digest_contrast_air_flow.set(data.contrast_air_speed_x100)
-
+        self.digest_active_alarms.set(self.mcu.find_alarm_bitmap(data.alarm_bitmap))
+        self.digest_active_hardware_signals.set(self.mcu.find_hardware_bitmap(data.alarm_bitmap))
         #self.master.after(200, self._do_digest)
         return data
 
