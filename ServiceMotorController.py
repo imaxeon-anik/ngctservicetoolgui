@@ -15,13 +15,63 @@ import traceback
 from fcm.fcm_pb_transport import FcmPbTransport
 from mcu_pb_transport import McuPbTransport
 from transport_stream import FcmUsbStream, McuUsbStream
-import fcm.fcm_commands_pb2 as FcmCommandMsg
 import mcu_commands_pb2 as CommandMsg
 import cli_common_pb2 as MsgValues
 
 response_codes = {"OK", "FAIL", "INVALID_COMMAND", "INVALID_PARAMETER", "INVALID_STATE", "REPEATED_OUTPUT"}
 logger = None
 McuTypes = json.load(open('mcu_cli_specification.json', 'r'))
+
+digest_headers = \
+    (
+        "alarm_bitmap",    				# Each bit corresponds to a specific alarm status where being '1' indicates an active alarm, and '0' indicates an inactive alarm. The Alarm enumeration defines meaningful names for each alarm's index in the bitmap.
+        "fcm_pinch_alarm_bitmap",    	# FCM Pinched Motor Alarms - see FCM CLI's Alarm for more information to decode the FCM alarm bitmap
+        "hardware_signal_bitmap",    	# MCU button/sensor pressed/on/detected state bitmap. Each bit corresponds to a specific button status where being '1' indicates an active alarm, and '0' indicates an inactive alarm. The Button enumeration defines meaningful names for each alarm's index in the bitmap.
+        "contrast_syringe_type",    	# The contrast syringe type.
+        "flush_syringe_type",    		# The flush syringe type
+        "flush_fill_valve_pos",    		# The FCM's flush fill valve position
+        "flush_inject_valve_pos",    	# The FCM's flush inject valve position
+        "contrast_fill_valve_pos",    	# The FCM's contrast fill valve position
+        "contrast_inject_valve_pos",    # The FCM's contrast inject valve position
+        "flush_fill_valve_state",    	# The FCM's flush fill valve state
+        "flush_inject_valve_state",    	# The FCM's flush inject valve state
+        "contrast_fill_valve_state",    # The FCM's contrast fill valve state
+        "contrast_inject_valve_state",  # The FCM's contrast inject valve state
+        "inject_phase",    				# The current injection phase. Only valid during an injection
+        "inject_phase_time_ms",    		# Current injection phase time in milliseconds.
+        "inject_phase_volume_delivered_x10",    # , 0.1 ml, Current injection phase volume already delivered in 0.1 ml
+        "inject_progress",    			# The inject progress (status)
+        "inject_complete_state",    	# The inject complete state
+        "inject_pressure_kpa",    		# The predicted inject pressure in kpa unit
+        "contrast_pressure_kpa",    	# The predicted contrast pressure in kpa unit
+        "flush_pressure_kpa",    		# The predicted flush pressure in kpa unit
+        "contrast_syringe_state",    	# The contrast syringe status
+        "contrast_volume_x10",    		# The contrast volume in .1 ml unit
+        "contrast_flow_x100",    		# The contrast flow rate in .01 ml/s
+        "contrast_motor_pid",    		# The contrast motor PID
+        "contrast_actual_speed_x100",   # The contrast actual speed in .01 ml/s
+        "contrast_motor_current_adc",   # The contrast motor current ADC (12 bits)
+        "contrast_plunger_adc",    		# The contrast plunger ADC (12 bits)
+        "contrast_plunger_state",    	# The contrast plunger state
+        "flush_syringe_state",    		# The flush syringe status
+        "flush_volume_x10",    			# The flush plunger volume in .1 ml unit
+        "flush_flow_x100",    			# The flush flow rate in .01 ml/s unit
+        "flush_motor_pid",    			# The flush motor PID value
+        "flush_actual_speed_x100",    	# The flush plunger speed in .01 ml unit
+        "flush_motor_current_adc",    	# The flush motor current ADC (12 bits)
+        "flush_plunger_adc",    		# The flush plunger ADC (12 bits)
+        "flush_plunger_state",    		# The flush plunger state
+        "pressure_adc",    				# The pressure ADC reading (12 bits)
+        "battery_level",    			# The battery level. Valid if the power source is battery
+        "power_source",    				# The power source (AC or battery)
+        "flush_air_speed_x100",    		# The estimated air speed in the flush syringe in .01 ml/s unit
+        "flush_air_volume_x100",    	# The estimated air volume in the flush syringe in .01 ml unit
+        "contrast_air_speed_x100",    	# The estimated air speed in the contrast syringe in .01 ml/s unit
+        "contrast_air_volume_x100",    	# The estimated air volume in contrast syringe in .01 ml unit
+        "contrast_realtime_pid",    	# Contrast realtime PID (smaller size filtering compared with contrast_motor_pid)
+        "flush_realtime_pid",    		# flush realtime PID (smaller size filtering compared with flush_motor_pid)
+        "mcu_diagnostic"    			# Free text subfields with : separator. <type>[:<field>]* Refer to Diagnostic Message for more details
+    )
 
 
 def get_datetime_string() -> str:
@@ -43,7 +93,7 @@ class MotorController:
         self._main_comm_thread = None
         self._main_com_verbose = False
 
-        self._log_file = None
+        # self._log_file = None
         self._digest_log = None
         self._digest_log_start_time = time.time_ns()
 
@@ -51,7 +101,7 @@ class MotorController:
         self._monitor_com_thread = None
         self._stop_monitor = False
         self._monitor_count = 0
-        self._monitor_log_file = None
+        # self._monitor_log_file = None
 
         self._output_dir = os.path.abspath(output_dir)
         if not os.path.exists(self._output_dir):
@@ -127,7 +177,7 @@ class MotorController:
         for name in ("USB Serial Device",):  # add more name as needed
             return cls.get_port_by_name(name)
 
-    def set_main_com_verbose(self, verbose: bool):
+    def set_main_com_verbose(self, verbose: bool = True):
         self._main_com_verbose = verbose
 
     # threading code
@@ -274,57 +324,6 @@ class MotorController:
             self._main_comm_thread.join()
             print("The main thread has stopped")
 
-    # def _monitor_thread_function(self):
-    #     """
-    #     This function read PID debug data from the monitor port (prefer USB PDC over USB serial)
-    #     """
-    #     # read the response
-    #     print("Monitor Thread start")
-    #     block_size_as_byte_array = bytearray([PID_STRUCT_SIZE])
-    #
-    #     # temporary need to write this twice to ensure handler process it
-    #     text = Command("PIDdebug all 1\r").get_command()
-    #     self._monitor_serial.write(bytearray(text, encoding='utf-8'))
-    #     while True:
-    #         # read until we see data must be  PID_STRUCT_SIZE
-    #         while True:
-    #             # read a byte and expect PID_STRUCT_SIZE
-    #             # if time out read return none.
-    #             try:
-    #                 data = self._monitor_serial.read(size=1)
-    #             except SerialException as e:
-    #                 print("ERROR: serial exception", e)
-    #                 self._stop_monitor = True
-    #                 # exit(1)   # todo is this too much
-    #                 break  # the inner while loop
-    #
-    #             if self._stop_monitor:
-    #                 # write a char to stop the monitoring
-    #                 self._monitor_serial.write(bytearray("\r", encoding='utf-8'))
-    #                 break
-    #             if self._monitor_log_file and data is not None:
-    #                 self._monitor_log_file.write(data)  # write the error byte
-    #             if data == block_size_as_byte_array:
-    #                 break   # got the byte
-    #             # skip the wrong size byte
-    #             # if len(data) >= 1:
-    #             #  print("Error byte %0x" % data[0])
-    #
-    #         if self._stop_monitor:
-    #             break  # stop it.
-    #
-    #         data = self._monitor_serial.read(size=PID_STRUCT_SIZE - 1)
-    #         if self._monitor_log_file and data is not None:
-    #             self._monitor_count += 1
-    #             self._monitor_log_file.write(data)
-    #
-    #         if self._stop_monitor:
-    #             break
-    #
-    #     # self._Monitor.write(bytearray("\r", encoding='utf-8'))
-    #
-    #     print("Monitor Thread end")
-
     def find_alarm_bitmap(self, bitmap):
         alarm_list = []
         alarm_name_list = []
@@ -351,9 +350,16 @@ class MotorController:
     def find_hardware_bitmap(self, bits):
         data = list(filter(lambda t: t['name'] == "HardwareSignal", McuTypes['support_types']))[0]['categorical_values']
         bitmap = []
-        for i in range(0, 32):
-            if bits & 1 << i != 0:
-                bitmap.append(data[i]['name'])
+        bit_shift_count = 0
+        # if len(data) > 0:
+        #     for i in range(0, 32):
+        #         print(i)
+        #         if bits & 1 << i != 0:
+        #             bitmap.append(data[i]['name'])
+        for i in data:
+            if bits & 1 << bit_shift_count != 0:
+                bitmap.append(i['name'])
+            bit_shift_count += 1
         return ', '.join(bitmap)
 
     def _get_digest(self):
@@ -366,10 +372,7 @@ class MotorController:
         print(self._get_digest())
 
     def update_digest(self):
-        try:
-            self.last_digest_data = self._get_digest()
-        except:
-            print("MCU Error")
+        self.last_digest_data = self._get_digest()
         return self.last_digest_data
 
     def plunger_status(self, plunger_state):
@@ -379,13 +382,13 @@ class MotorController:
         return ''.join(MsgValues.SyringeState.Name(int(syringe_state)).split("_")[2:])
 
     def s_push_c_pull(self, motor):
-        # TODO
+        # motor index will push, other index will pull
         self.update_digest()
 
         if (
                 self.last_digest_data.flush_syringe_state == MsgValues.SyringeState.PROCESSING
                 or self.last_digest_data.contrast_syringe_state
-                == 'PROCESSING'):
+                == MsgValues.SyringeState.PROCESSING):
             print("ERROR: Either motors are still busy")
             return False
 
@@ -402,7 +405,7 @@ class MotorController:
                   self.get_syringe_volume(motor % 2 + 1))
             return False
 
-    def stop(self, verbose: bool):
+    def stop(self, verbose: bool = True):
         if verbose:
             print("Stopping")
 
@@ -410,9 +413,9 @@ class MotorController:
         command_data = self.mcu_transport.send_stop(command)
         return command_data
 
-    def MCAL(self, motor: int, verbose: bool):
+    def mcal(self, motor: int, verbose: bool = True):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 print("Executing MCAL_flush")
             else:
                 print("Executing MCAL_contrast")
@@ -421,11 +424,11 @@ class MotorController:
         command_data = self.mcu_transport.send_mcal(command)
         return command_data
 
-    def disengage(self, motor: int, verbose: bool):
+    def disengage(self, motor: int, verbose: bool = True):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 print("Executing disengage_flush")
-            if motor == 2:
+            if motor == 1:
                 print("Executing disengage_contrast")
         command = CommandMsg.DISENGAGE_Command()
         command.motor = motor
@@ -439,7 +442,7 @@ class MotorController:
         command.speed_x10 = int(speed)
         return self.mcu_transport.send_piston(command)
 
-    def motor_up(self, motor: int, direction: int, volume: int, speed: int, verbose: bool):
+    def motor_up(self, motor: int, direction: int, volume: int, speed: int, verbose: bool = True):
         if verbose:
             if motor == 0:
                 if direction > 0:
@@ -459,27 +462,29 @@ class MotorController:
         command_data = self.mcu_transport.send_piston(command)
         return command_data
 
-    def find_plunger(self, motor: int, speed: int, verbose: bool):
+    def find_plunger(self, motor: int, speed: int = 10, verbose=True):
         if verbose:
             if motor == 0:
                 print("Executing find_plunger flush")
-            else:
+            elif motor == 1:
                 print("Executing find_plunger contrast")
+            elif motor == 2:
+                print("Executing find_plunger all")
 
         command = CommandMsg.FIND_PLUNGER_Command()
         command.speed_x10 = int(speed)
         command.motor = motor
         return self.mcu_transport.send_piston(command)
 
-    def sys(self, verbose: bool):
+    def sys(self, verbose: bool = True):
         if verbose:
             print("Executing sys")
         command = CommandMsg.SYS_Command()
         return self.mcu_transport.send_sys(command)
 
-    def pull2push(self, motor: int, verbose: bool):
+    def pull2push(self, motor: int, verbose: bool = True):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 print("Executing Pull2Push flush")
             else:
                 print("Executing Pull2Push contrast")
@@ -487,9 +492,9 @@ class MotorController:
         command.motor = motor
         return self.mcu_transport.send_pull_to_push(command)
 
-    def push2pull(self, motor: int, verbose: bool):
+    def push2pull(self, motor: int, verbose: bool = True):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 print("Executing Pushl2Pull flush")
             else:
                 print("Executing Push2Pull contrast")
@@ -497,9 +502,9 @@ class MotorController:
         command.motor = motor
         return self.mcu_transport.send_push_to_pull(command)
 
-    def fill(self, motor: int, speed: int, verbose: bool):
+    def fill(self, motor: int, speed: int, volume: int = 1000, verbose: bool = True):
         if verbose:
-            if motor == 1:
+            if motor == 0:
                 print("Executing Fill flush")
             else:
                 print("Executing Fill contrast")
@@ -507,10 +512,12 @@ class MotorController:
         command = CommandMsg.FILL_Command()
         command.motor = motor
         command.speed_x10 = int(speed)
+        command.volume_x10 = int(volume)
+
         return self.mcu_transport.send_fill(command)
 
     def get_syringe_volume(self, syringe: int):
-        if syringe == 1:
+        if syringe == 0:
             # print(self._get_digest().flush_volume_x10)
             return self._get_digest().flush_volume_x10
         else:
@@ -582,10 +589,126 @@ class MotorController:
         return self.mcu_transport.send_piddebug(command)
 
     def move_fcm(self, left_fill_pos: int, left_patient_pos: int, right_fill_pos: int, right_patient_pos: int):
-        print("Executing move_fcm")
-        command = FcmCommandMsg.FCM_MOVE_Command()
+        # print("Executing move_fcm")
+        if left_fill_pos == 1 and left_patient_pos == 1 and right_patient_pos == 1 and right_fill_pos == 1:
+            print("Executing move_fcm HOME")
+        elif left_fill_pos == 2 and left_patient_pos == 2 and right_patient_pos == 2 and right_fill_pos == 2:
+            print("Executing move_fcm CLOSED")
+        elif left_fill_pos == 3 and left_patient_pos == 3 and right_patient_pos == 3 and right_fill_pos == 3:
+            print("Executing move_fcm OPEN")
+        command = CommandMsg.SEND_FCM_MOVE_Command()
         command.left_fill_pos = left_fill_pos
         command.left_patient_pos = left_patient_pos
         command.right_fill_pos = right_fill_pos
         command.right_patient_pos = right_patient_pos
-        return self.fcm_transport.send_fcm_move(command)
+        command_msg = self.mcu_transport.send_send_fcm_move(command)
+        # print(command_msg)
+        return command_msg
+        # return self.mcu_transport.send_send_fcm_move(command)
+
+    def motor_is_active(self, motor_index: int) -> bool:
+        if motor_index == 0:
+            return self.last_digest_data.flush_syringe_state == MsgValues.SyringeState.PROCESSING
+        elif motor_index == 1:
+            return self.last_digest_data.contrast_syringe_state == MsgValues.SyringeState.PROCESSING
+        else:
+            return False
+
+    def motor_is_engaged(self, motor_index: int):
+        if motor_index == 0:
+            return self.last_digest_data.flush_syringe_state == MsgValues.SyringeState.ENGAGED
+        elif motor_index == 1:
+            return self.last_digest_data.contrast_syringe_state == MsgValues.SyringeState.ENGAGED
+        else:
+            return False
+
+    def get_pressure_adc_in_psi(self) -> float:
+        pressure_adc = int(self.last_digest_data.pressure_adc)
+        pressure_psi = pressure_adc / 4095.0 * (500.00 + 14.7) - 14.7  # 0 = -14.7 psi, 4095 = 500psi pressure_adc
+        return pressure_psi
+
+    def wait_until(self, flush: bool = True, contrast: bool = True, delay=0.01):
+        waiting = True
+        while waiting:
+            self.update_digest(delay)
+            if flush and self.motor_is_active(0):
+                waiting = True
+            elif contrast and self.motor_is_active(1):
+                waiting = True
+            else:
+                break
+
+    def pressure_ready(self, motor: int, volume):
+        print("Executing pressure_ready")
+        command = CommandMsg.PRESSURE_READY_Command()
+        command.motor = motor
+        command.volume = volume
+        return self.mcu_transport.send_pressure_ready(command)
+
+    def set_digest_csv_log(self, csv_filename: str) -> str:
+        """Set the new log file and return the old log filename if available"""
+        last_log_name = ""
+        if self._digest_log:
+            last_log_name = self._digest_log.name
+            self._digest_log.close()
+            self._digest_log = None
+
+        if len(csv_filename) == 0:
+            return last_log_name
+        print("Previous digest log:", last_log_name)
+        print("Digest logging", csv_filename)
+        self._digest_log_start_time = time.time_ns()
+        self._digest_log = open(csv_filename, "w")
+        self._digest_log.write("T(ms),")
+        self._digest_log.write(",".join(digest_headers))
+        self._digest_log.write("\n")
+        self._digest_log.flush()     # need to flush or the script stop running -python foo???? why
+        return last_log_name
+
+    def get_absolute_path(self, filename):
+        """return the full path by prepending the output directory"""
+        return os.path.join(self._output_dir, filename)
+
+    def create_filename(self, name):
+        out_name = os.path.join(self._output_dir, name)
+        return out_name
+
+    def close(self):
+        self.stop_monitor_reading_thread()
+
+        if self._monitor_serial:
+            print("Closing the monitor port")
+            self._monitor_serial.close()
+            self._monitor_serial = None
+
+        if self._main_serial:
+            print("Closing the port")
+            self._main_serial.close()
+            self._main_serial = None
+        if self._log_file:
+            self._log_file.close()
+            self._log_file = None
+
+        if self._digest_log:
+            self._digest_log.close()
+            self._digest_log = None
+
+    def ensure_plunger_engaged(self, motor: int, max_retry=3) -> bool:
+        self.find_plunger(motor)
+
+        self.wait_until()
+        for i in range(max_retry):
+            self.update_digest()
+            if self.motor_is_engaged(motor):
+                return True
+            self.push2pull(motor)
+            self.wait_until()
+
+            if self.motor_is_engaged(motor):
+                return True
+
+            self.pull2push(motor)
+            self.wait_until()
+            if self.motor_is_engaged(motor):
+                return True
+        return False

@@ -2,9 +2,21 @@ import os
 import time
 import tkinter as tk
 from collections import deque
+from threading import Thread
+
 
 from ServiceMotorController import MotorController, get_datetime_string
 
+class digest_thread(Thread):
+    def __init__(self, mcu):
+        Thread.__init__(self)
+        self.mcu = mcu
+        self.daemon = True
+        self.start()
+
+    def run(self):
+        while True:
+            self.mcu.loop_digest()
 
 class MotorControllerApplication(tk.Frame):
     def __init__(self, master, mcu: MotorController, out_dir, verbose=False):
@@ -69,6 +81,11 @@ class MotorControllerApplication(tk.Frame):
         self._create_widgets()
         # self.master.after(20, self._update_binary_queue_timer)
         self.master.after(100, self._do_digest)
+
+    def loop_digest(self, delay: int = 0.5):
+        while True:
+            time.sleep(delay)
+            self._do_digest()
 
     def _on_quit(self):
         # self._on_cycle_test_stop()
@@ -189,6 +206,11 @@ class MotorControllerApplication(tk.Frame):
             command=lambda: self.mcu.move_fcm(3,3,3,3)
         ).grid(row=4, column=2)
 
+        tk.Button(
+            right_frame, text = "Clear Digest",
+            command=lambda: self.clear_digest()
+        ).grid(row=4, column=3)
+
         # right command frame ---------------------------------------------
         speed_frame = tk.Frame(self, width=frame_width, height=frame_height)
         speed_frame.grid(row=4, column=0)
@@ -199,7 +221,7 @@ class MotorControllerApplication(tk.Frame):
 
         tk.Button(
             left_frame, text="MCAL.S", fg="orange",
-            command=lambda: self.mcu.MCAL(0 ,True)).grid(row=0, column=1)
+            command=lambda: self.mcu.mcal(0 ,True)).grid(row=0, column=1)
 
         tk.Button(
             left_frame, text="⌂Home.S",
@@ -224,7 +246,7 @@ class MotorControllerApplication(tk.Frame):
 
         tk.Button(
             left_frame, text="MCAL.C", fg="orange",
-            command=lambda: self.mcu.MCAL(1, True)).grid(row=1, column=1)
+            command=lambda: self.mcu.mcal(1, True)).grid(row=1, column=1)
 
         tk.Button(
             left_frame, text="⌂Home.C",
@@ -269,12 +291,12 @@ class MotorControllerApplication(tk.Frame):
 
         tk.Button(
             left_frame, text="FILL.S",
-            command=lambda: self.mcu.fill(0, 10 * self._speed_var.get(), True)
+            command=lambda: self.mcu.fill(0, 10 * self._speed_var.get(), 10, True)
         ).grid(row=0, column=8)
 
         tk.Button(
             left_frame, text="FILL.C",
-            command=lambda: self.mcu.fill(1, 10 * self._speed_var.get(), True)
+            command=lambda: self.mcu.fill(1, 10 * self._speed_var.get(), 10, True)
         ).grid(row=1, column=8)
 
 
@@ -378,8 +400,45 @@ class MotorControllerApplication(tk.Frame):
         self.digest_contrast_air_flow.set(data.contrast_air_speed_x100)
         self.digest_active_alarms.set(self.mcu.find_alarm_bitmap(data.alarm_bitmap))
         self.digest_active_hardware_signals.set(self.mcu.find_hardware_bitmap(data.alarm_bitmap))
-        #self.master.after(200, self._do_digest)
         return data
+
+    def clear_digest(self):
+        self.digest_inject_progress_var.set(None)
+        self.digest_inject_complete_var.set(None)
+        self.digest_inject_pressure_var.set(None)
+        self.digest_flush_pressure_var.set(None)
+        self.digest_contrast_pressure_var.set(None)
+
+        self.digest_contrast_status_var.set(None)
+        self.digest_contrast_volume_var.set(None)
+        self.digest_contrast_flow_var.set(None)
+        self.digest_contrast_current_var.set(None)
+        self.digest_contrast_plunger_var.set(None)
+
+        self.digest_flush_status_var.set(None)
+        self.digest_flush_volume_var.set(None)
+        self.digest_flush_flow_var.set(None)
+        self.digest_flush_current_var.set(None)
+        self.digest_flush_plunger_var.set(None)
+
+        self.digest_flush_plunger_adc_var.set(None)
+        self.digest_contrast_plunger_adc_var.set(None)
+
+        self.digest_power_source_var.set(None)
+        self.digest_diagnostic_var.set(None)
+        self.digest_battery_level_var.set(None)
+        self.digest_pressure_adc.set(None)
+
+        self.digest_flush_actual_speed_var.set(None)
+        self.digest_contrast_actual_speed_var.set(None)
+
+        self.digest_flush_air_vol.set(None)
+        self.digest_contrast_air_vol.set(None)
+
+        self.digest_flush_air_flow.set(None)
+        self.digest_contrast_air_flow.set(None)
+        self.digest_active_alarms.set(None)
+        self.digest_active_hardware_signals.set(None)
 
 
 def main(main_com: str, debug_com: str, output_dir: str):
@@ -392,7 +451,7 @@ def main(main_com: str, debug_com: str, output_dir: str):
     mcu.set_main_com_verbose(True)
     root = tk.Tk()
     app = MotorControllerApplication(root, mcu, output_dir)
-
+    d_thread = digest_thread(app)
     def on_app_quit():
         print("WM_DELETE_WINDOW -> on_app_quit()")
         mcu.stop_monitor_reading_thread()
