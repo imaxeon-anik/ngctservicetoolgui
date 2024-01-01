@@ -5,7 +5,7 @@ from collections import deque
 from threading import Thread
 
 
-from ServiceMotorController import MotorController, get_datetime_string
+from ServiceMotorController import MotorController
 
 class digest_thread(Thread):
     def __init__(self, mcu):
@@ -445,9 +445,9 @@ def main(main_com: str, debug_com: str, output_dir: str):
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
-    log_filename = "mcu_link_%s.txt" % get_datetime_string()
+    # log_filename = "mcu_link_%s.txt" % get_datetime_string()
 
-    mcu = MotorController(main_com, debug_com, output_dir, log_filename)
+    mcu = MotorController(main_com, debug_com, output_dir)
     mcu.set_main_com_verbose(True)
     root = tk.Tk()
     app = MotorControllerApplication(root, mcu, output_dir)

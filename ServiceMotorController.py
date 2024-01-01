@@ -24,9 +24,13 @@ McuTypes = json.load(open('mcu_cli_specification.json', 'r'))
 
 digest_headers = \
     (
-        "alarm_bitmap",    				# Each bit corresponds to a specific alarm status where being '1' indicates an active alarm, and '0' indicates an inactive alarm. The Alarm enumeration defines meaningful names for each alarm's index in the bitmap.
+        "alarm_bitmap",    				# Each bit corresponds to a specific alarm status where being '1' indicates an
+                                        # active alarm, and '0' indicates an inactive alarm.
+                                        # The Alarm enumeration defines meaningful names for each alarm's index in the bitmap.
         "fcm_pinch_alarm_bitmap",    	# FCM Pinched Motor Alarms - see FCM CLI's Alarm for more information to decode the FCM alarm bitmap
-        "hardware_signal_bitmap",    	# MCU button/sensor pressed/on/detected state bitmap. Each bit corresponds to a specific button status where being '1' indicates an active alarm, and '0' indicates an inactive alarm. The Button enumeration defines meaningful names for each alarm's index in the bitmap.
+        "hardware_signal_bitmap",    	# MCU button/sensor pressed/on/detected state bitmap. Each bit corresponds to a
+                                        # specific button status where being '1' indicates an active alarm, and '0'
+                                        # indicates an inactive alarm. The Button enumeration defines meaningful names for each alarm's index in the bitmap.
         "contrast_syringe_type",    	# The contrast syringe type.
         "flush_syringe_type",    		# The flush syringe type
         "flush_fill_valve_pos",    		# The FCM's flush fill valve position
@@ -85,7 +89,7 @@ class MotorController:
     USB_PDC_BAUD_RATE = 115200
     SCI5_TIME_OUT = 1  # seconds
 
-    def __init__(self, main_com: str, debug_com: str, output_dir: str, log_filename=""):
+    def __init__(self, main_com: str, debug_com: str, output_dir: str):
         self._is_open = False
         self.status = None
         self._main_serial = None  # of type Serial() or on startup
@@ -113,14 +117,14 @@ class MotorController:
         self._response_time_dict = defaultdict(list)
         self.last_command_duration = 0  # duration of the response of the last command
 
-        if len(log_filename) == 0:
-            # create MCU with the link name and current system timestamp
-            log_filename = self.get_filename_from_current_timestamp(prefix="MCU-%s" % main_com)
-        else:
-            log_filename = os.path.join(self._output_dir, log_filename)
-        self._log_file = open(log_filename, "w")
-        print("Set output directory:", self._output_dir)
-        print("MCU log filename", log_filename)
+        # if len(log_filename) == 0:
+        #     # create MCU with the link name and current system timestamp
+        #     log_filename = self.get_filename_from_current_timestamp(prefix="MCU-%s" % main_com)
+        # else:
+        #     log_filename = os.path.join(self._output_dir, log_filename)
+        # self._log_file = open(log_filename, "w")
+        # print("Set output directory:", self._output_dir)
+        # print("MCU log filename", log_filename)
 
         try:
             self.mcu_stream = McuUsbStream(logging=logger)
@@ -317,9 +321,9 @@ class MotorController:
             self._stop_monitor = True
             self._monitor_com_thread.join()
             self._monitor_com_thread = None
-            if self._monitor_log_file:
-                self._monitor_log_file.close()
-                self._monitor_log_file = None
+            # if self._monitor_log_file:
+            #     self._monitor_log_file.close()
+            #     self._monitor_log_file = None
             print("The monitor thread has stopped")
             self._main_comm_thread.join()
             print("The main thread has stopped")
@@ -442,7 +446,7 @@ class MotorController:
         command.speed_x10 = int(speed)
         return self.mcu_transport.send_piston(command)
 
-    def motor_up(self, motor: int, direction: int, volume: int, speed: int, verbose: bool = True):
+    def motor_up(self, motor: int, direction, volume, speed, verbose: bool = True):
         if verbose:
             if motor == 0:
                 if direction > 0:
@@ -462,7 +466,7 @@ class MotorController:
         command_data = self.mcu_transport.send_piston(command)
         return command_data
 
-    def find_plunger(self, motor: int, speed: int = 10, verbose=True):
+    def find_plunger(self, motor: int, speed=10, verbose=True):
         if verbose:
             if motor == 0:
                 print("Executing find_plunger flush")
@@ -502,7 +506,7 @@ class MotorController:
         command.motor = motor
         return self.mcu_transport.send_push_to_pull(command)
 
-    def fill(self, motor: int, speed: int, volume: int = 1000, verbose: bool = True):
+    def fill(self, motor: int, speed, volume=1000, verbose: bool = True):
         if verbose:
             if motor == 0:
                 print("Executing Fill flush")
@@ -685,9 +689,9 @@ class MotorController:
             print("Closing the port")
             self._main_serial.close()
             self._main_serial = None
-        if self._log_file:
-            self._log_file.close()
-            self._log_file = None
+        # if self._log_file:
+        #     self._log_file.close()
+        #     self._log_file = None
 
         if self._digest_log:
             self._digest_log.close()
