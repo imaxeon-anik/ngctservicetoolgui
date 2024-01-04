@@ -1,26 +1,28 @@
 # MotorController
 import math
 
-from serial import Serial, SerialException
+# from serial import Serial, SerialException
 import serial.tools.list_ports as list_ports
 import time
 from collections import defaultdict, deque
 import json
-import threading
 from sys import exit
 import os
 from datetime import datetime
 import traceback
 
-from fcm.fcm_pb_transport import FcmPbTransport
-from mcu_pb_transport import McuPbTransport
-from transport_stream import FcmUsbStream, McuUsbStream
-import mcu_commands_pb2 as CommandMsg
-import cli_common_pb2 as MsgValues
+import sys
+dir = os.path.dirname(os.path.realpath(__file__))
+sys.path.append(os.path.join(dir, 'py_out'))
+
+from py_out.mcu_pb_transport import McuPbTransport
+from py_out.transport_stream import FcmUsbStream, McuUsbStream
+import py_out.mcu_commands_pb2 as CommandMsg
+import py_out.cli_common_pb2 as MsgValues
 
 response_codes = {"OK", "FAIL", "INVALID_COMMAND", "INVALID_PARAMETER", "INVALID_STATE", "REPEATED_OUTPUT"}
 logger = None
-McuTypes = json.load(open('mcu_cli_specification.json', 'r'))
+McuTypes = json.load(open('py_out/mcu_cli_specification.json', 'r'))
 
 digest_headers = \
     (
@@ -74,7 +76,8 @@ digest_headers = \
         "contrast_air_volume_x100",    	# The estimated air volume in contrast syringe in .01 ml unit
         "contrast_realtime_pid",    	# Contrast realtime PID (smaller size filtering compared with contrast_motor_pid)
         "flush_realtime_pid",    		# flush realtime PID (smaller size filtering compared with flush_motor_pid)
-        "mcu_diagnostic"    			# Free text subfields with : separator. <type>[:<field>]* Refer to Diagnostic Message for more details
+        "mcu_diagnostic"    			# Free text subfields with : separator.
+        # <type>[:<field>]* Refer to Diagnostic Message for more details
     )
 
 
@@ -98,8 +101,8 @@ class MotorController:
         self._main_com_verbose = False
 
         # self._log_file = None
-        self._digest_log = None
-        self._digest_log_start_time = time.time_ns()
+        # self._digest_log = None
+        # self._digest_log_start_time = time.time_ns()
 
         self._monitor_serial = None  # of type Serial() or None if start_monitor_reading_thread() is not called.
         self._monitor_com_thread = None
@@ -131,7 +134,7 @@ class MotorController:
             self.fcm_stream = FcmUsbStream(logging=logger)
             self.mcu_stream.open(logging=logger)
             self.mcu_transport = McuPbTransport(logger, self.mcu_stream)
-            self.fcm_transport = FcmPbTransport(logger, self.fcm_stream)
+            # self.fcm_transport = FcmPbTransport(logger, self.fcm_stream)
         except FileNotFoundError as e:
             print("Error")
             traceback.print_exception(e)
@@ -185,148 +188,149 @@ class MotorController:
         self._main_com_verbose = verbose
 
     # threading code
-    def read_line(self, wait: bool = True) -> str:
-        """
-        waiting for the main comm thread to read a line
-        @todo using sync method instead of polling
-        :return:
-        """
-        if self._monitor_com_thread:
-            if wait:
-                while len(self._main_comm_queue) == 0:
-                    time.sleep(0.01)
-                return self._main_comm_queue.popleft()
-            else:
-                if len(self._main_comm_queue):
-                    return self._main_comm_queue.popleft()
-                else:
-                    return ""
-        else:
-            # attempt to read if the main com if the main thread has not started
-            line = self._main_serial.read_until().decode()
-            if len(line):
-                line = line.rstrip()
-                if self._log_file:
-                    if self._main_com_verbose:
-                        print("M:", line)
-                    self._log_file.write(line + "\n")
-                    self._log_file.flush()
-            return line
+    # def read_line(self, wait: bool = True) -> str:
+    #     """
+    #     waiting for the main comm thread to read a line
+    #     @todo using sync method instead of polling
+    #     :return:
+    #     """
+    #     if self._monitor_com_thread:
+    #         if wait:
+    #             while len(self._main_comm_queue) == 0:
+    #                 time.sleep(0.01)
+    #             return self._main_comm_queue.popleft()
+    #         else:
+    #             if len(self._main_comm_queue):
+    #                 return self._main_comm_queue.popleft()
+    #             else:
+    #                 return ""
+    #     else:
+    #         # attempt to read if the main com if the main thread has not started
+    #         line = self._main_serial.read_until().decode()
+    #         if len(line):
+    #             line = line.rstrip()
+    #             if self._log_file:
+    #                 if self._main_com_verbose:
+    #                     print("M:", line)
+    #                 self._log_file.write(line + "\n")
+    #                 self._log_file.flush()
+    #         return line
 
-    def _main_comm_thread_task(self):
-        """
-        Command will be sent directly, the response will be read via this thread and added to the queue
-        :return:
-        """
-        print("Main communication thread start and reading from %s(FTDI)" % self._main_port_name)
-        while True:
-            line = self._main_serial.read_until().decode()
-            if len(line):
-                line = line.rstrip()
-                self._main_comm_queue.append(line)
-                print(line)
-                if self._log_file:
-                    if self._main_com_verbose:
-                        print("M:", line)
-                    self._log_file.write(line + "\n")
-                    self._log_file.flush()
-            if self._stop_monitor:
-                break
-        print("Main communication thread end")
-
-    def start_monitor_reading_thread(self, monitor_file) -> bool:
-        """
-        Start the reading thread if it has not been started
-        :param monitor_file:  file handle in binary mode
-        :return:
-        """
-        self._monitor_count = 0
-        if self._monitor_com_thread is not None:
-            return False
-
-        if self._monitor_port_name == "":
-            # Attempt to find the monitor port (prefer high speed USB port)
-            self._monitor_port_name = self.find_mcu_usb_port()
-            if self._monitor_port_name == "":
-                print("ERROR missing USB COM device. cannot start monitor thread.")
-                exit(1)
-
-            print("Use USB %s as the monitor COM port for speed" % self._monitor_port_name)
-
-        if self._main_comm_thread is None:
-            self._main_comm_thread = threading.Thread(target=self._main_comm_thread_task)
-            self._main_comm_thread.start()
-
-        if self._monitor_log_file:
-            self._monitor_log_file.close()
-            self._monitor_log_file = None
-
-        if monitor_file is None:
-            print("The monitor port is not used")
-            self._stop_monitor = True
-            return True
-
-        # want timeout every second so we stop the thread quickly
-        try:
-            self._monitor_log_file = monitor_file  # open(output_filename, "wb")
-            self._monitor_serial = Serial(self._monitor_port_name, baudrate=self.SCI5_BAUD_RATE,
-                                          timeout=self.SCI5_TIME_OUT)
-        except SerialException as e:
-            print("Exception while open monitor port", e)
-            traceback.print_exception(e)
-            self._monitor_serial = None
-            self._stop_monitor = True
-            if self._main_comm_thread is not None:
-                self._main_comm_thread.join()  # thread.join
-
-            if self._monitor_log_file:
-                self._monitor_log_file.close()
-                self._monitor_log_file = None
-            exit(2)
-
-        print("SKIP: START: try to escape USB binary CLI to text CLI")
-        # self._monitor_serial.write(bytearray("\r\n", encoding='utf-8'))  # try to clear/stop any of the previous PIDDebug command
-        while 1:
-            self._monitor_serial.write(b'\r')
-            time.sleep(0.1)
-            try:
-                raw_data = self._monitor_serial.read_all()
-                text = raw_data.decode()
-                print("SKIP:", len(text), text)
-            except UnicodeDecodeError as ex:
-                print("Skipping binary data", ex)
-                continue
-            if "Switching CLI from binary to text mode" in text:
-                break
-            elif "INVALID_COMMAND" in text:
-                break
-        while 1:
-            time.sleep(0.1)
-            data = self._monitor_serial.read_all()
-            if len(data):
-                print("SKIP:", data)
-            else:
-                break
-        self._monitor_serial.reset_input_buffer()
-        print("SKIP: DONE!")
-        self._main_serial.read_all()
-        # self._monitor_com_thread = threading.Thread(target=self._monitor_thread_function)
-        # self._monitor_com_thread.start()
-        print("Debug port is ready")
-        return True
-
-    def stop_monitor_reading_thread(self):
-        if self._monitor_com_thread:
-            print("Stopping the monitor thread")
-            self._stop_monitor = True
-            self._monitor_com_thread.join()
-            self._monitor_com_thread = None
-            # if self._monitor_log_file:
-            #     self._monitor_log_file.close()
-            #     self._monitor_log_file = None
-            print("The monitor thread has stopped")
-            self._main_comm_thread.join()
-            print("The main thread has stopped")
+    # def _main_comm_thread_task(self):
+    #     """
+    #     Command will be sent directly, the response will be read via this thread and added to the queue
+    #     :return:
+    #     """
+    #     print("Main communication thread start and reading from %s(FTDI)" % self._main_port_name)
+    #     while True:
+    #         line = self._main_serial.read_until().decode()
+    #         if len(line):
+    #             line = line.rstrip()
+    #             self._main_comm_queue.append(line)
+    #             print(line)
+    #             if self._log_file:
+    #                 if self._main_com_verbose:
+    #                     print("M:", line)
+    #                 self._log_file.write(line + "\n")
+    #                 self._log_file.flush()
+    #         if self._stop_monitor:
+    #             break
+    #     print("Main communication thread end")
+    #
+    # def start_monitor_reading_thread(self, monitor_file) -> bool:
+    #     """
+    #     Start the reading thread if it has not been started
+    #     :param monitor_file:  file handle in binary mode
+    #     :return:
+    #     """
+    #     self._monitor_count = 0
+    #     if self._monitor_com_thread is not None:
+    #         return False
+    #
+    #     if self._monitor_port_name == "":
+    #         # Attempt to find the monitor port (prefer high speed USB port)
+    #         self._monitor_port_name = self.find_mcu_usb_port()
+    #         if self._monitor_port_name == "":
+    #             print("ERROR missing USB COM device. cannot start monitor thread.")
+    #             exit(1)
+    #
+    #         print("Use USB %s as the monitor COM port for speed" % self._monitor_port_name)
+    #
+    #     if self._main_comm_thread is None:
+    #         self._main_comm_thread = threading.Thread(target=self._main_comm_thread_task)
+    #         self._main_comm_thread.start()
+    #
+    #     if self._monitor_log_file:
+    #         self._monitor_log_file.close()
+    #         self._monitor_log_file = None
+    #
+    #     if monitor_file is None:
+    #         print("The monitor port is not used")
+    #         self._stop_monitor = True
+    #         return True
+    #
+    #     # want timeout every second so we stop the thread quickly
+    #     try:
+    #         self._monitor_log_file = monitor_file  # open(output_filename, "wb")
+    #         self._monitor_serial = Serial(self._monitor_port_name, baudrate=self.SCI5_BAUD_RATE,
+    #                                       timeout=self.SCI5_TIME_OUT)
+    #     except SerialException as e:
+    #         print("Exception while open monitor port", e)
+    #         traceback.print_exception(e)
+    #         self._monitor_serial = None
+    #         self._stop_monitor = True
+    #         if self._main_comm_thread is not None:
+    #             self._main_comm_thread.join()  # thread.join
+    #
+    #         if self._monitor_log_file:
+    #             self._monitor_log_file.close()
+    #             self._monitor_log_file = None
+    #         exit(2)
+    #
+    #     print("SKIP: START: try to escape USB binary CLI to text CLI")
+    #     # self._monitor_serial.write(bytearray("\r\n", encoding='utf-8'))  # try to clear/stop any of
+    #     the previous PIDDebug command
+    #     while 1:
+    #         self._monitor_serial.write(b'\r')
+    #         time.sleep(0.1)
+    #         try:
+    #             raw_data = self._monitor_serial.read_all()
+    #             text = raw_data.decode()
+    #             print("SKIP:", len(text), text)
+    #         except UnicodeDecodeError as ex:
+    #             print("Skipping binary data", ex)
+    #             continue
+    #         if "Switching CLI from binary to text mode" in text:
+    #             break
+    #         elif "INVALID_COMMAND" in text:
+    #             break
+    #     while 1:
+    #         time.sleep(0.1)
+    #         data = self._monitor_serial.read_all()
+    #         if len(data):
+    #             print("SKIP:", data)
+    #         else:
+    #             break
+    #     self._monitor_serial.reset_input_buffer()
+    #     print("SKIP: DONE!")
+    #     self._main_serial.read_all()
+    #     # self._monitor_com_thread = threading.Thread(target=self._monitor_thread_function)
+    #     # self._monitor_com_thread.start()
+    #     print("Debug port is ready")
+    #     return True
+    #
+    # def stop_monitor_reading_thread(self):
+    #     if self._monitor_com_thread:
+    #         print("Stopping the monitor thread")
+    #         self._stop_monitor = True
+    #         self._monitor_com_thread.join()
+    #         self._monitor_com_thread = None
+    #         # if self._monitor_log_file:
+    #         #     self._monitor_log_file.close()
+    #         #     self._monitor_log_file = None
+    #         print("The monitor thread has stopped")
+    #         self._main_comm_thread.join()
+    #         print("The main thread has stopped")
 
     def find_alarm_bitmap(self, bitmap):
         alarm_list = []
@@ -373,7 +377,7 @@ class MotorController:
         return dr
 
     def _print_digest(self):
-        print(self._get_digest())
+        print(self.last_digest_data)
 
     def update_digest(self):
         self.last_digest_data = self._get_digest()
@@ -387,20 +391,27 @@ class MotorController:
 
     def s_push_c_pull(self, motor):
         # motor index will push, other index will pull
-        self.update_digest()
+        # self.update_digest()
+
+        last_contrast_syringe_state = self.last_digest_data.contrast_syringe_state
+        last_flush_syringe_state = self.last_digest_data.flush_syringe_state
+
+        last_contrast_plunger_state = self.last_digest_data.contrast_plunger_state
+        last_flush_plunger_state = self.last_digest_data.flush_plunger_state
+
 
         if (
-                self.last_digest_data.flush_syringe_state == MsgValues.SyringeState.PROCESSING
-                or self.last_digest_data.contrast_syringe_state
+                last_flush_syringe_state == MsgValues.SyringeState.PROCESSING
+                or last_contrast_syringe_state
                 == MsgValues.SyringeState.PROCESSING):
             print("ERROR: Either motors are still busy")
             return False
 
-        if self.last_digest_data.contrast_plunger_state != "ENGAGED":
+        if last_contrast_plunger_state != "ENGAGED":
             print("does not have a contrast plunger")
             return False
 
-        if self.last_digest_data.flush_plunger_state != "ENGAGED":
+        if last_flush_plunger_state != "ENGAGED":
             print("does not have a flush plunger")
             return False
 
@@ -417,7 +428,7 @@ class MotorController:
         command_data = self.mcu_transport.send_stop(command)
         return command_data
 
-    def mcal(self, motor: int, verbose: bool = True):
+    def m_cal(self, motor: int, verbose: bool = True):
         if verbose:
             if motor == 0:
                 print("Executing MCAL_flush")
@@ -523,9 +534,11 @@ class MotorController:
     def get_syringe_volume(self, syringe: int):
         if syringe == 0:
             # print(self._get_digest().flush_volume_x10)
-            return self._get_digest().flush_volume_x10
+            return self.last_digest_data.flush_volume_x10
+            # return self._get_digest().flush_volume_x10
         else:
-            return self._get_digest().contrast_volume_x10
+            return self.last_digest_data.contrast_volume_x10
+            # return self._get_digest().contrast_volume_x10
 
     def pull_pressure_ramp(self, motor, ramp_flow_rate, ramp_delta_pressure, initial_pressure, max_pressure,
                            stable_flow, stable_time):
@@ -633,8 +646,9 @@ class MotorController:
 
     def wait_until(self, flush: bool = True, contrast: bool = True, delay=0.01):
         waiting = True
+        time.sleep(delay)
         while waiting:
-            self.update_digest(delay)
+            # self.update_digest()
             if flush and self.motor_is_active(0):
                 waiting = True
             elif contrast and self.motor_is_active(1):
@@ -678,7 +692,7 @@ class MotorController:
         return out_name
 
     def close(self):
-        self.stop_monitor_reading_thread()
+        # self.stop_monitor_reading_thread()
 
         if self._monitor_serial:
             print("Closing the monitor port")
@@ -702,7 +716,7 @@ class MotorController:
 
         self.wait_until()
         for i in range(max_retry):
-            self.update_digest()
+            # self.update_digest()
             if self.motor_is_engaged(motor):
                 return True
             self.push2pull(motor)
@@ -716,3 +730,18 @@ class MotorController:
             if self.motor_is_engaged(motor):
                 return True
         return False
+
+    def prime(self, motor, volume_x10, speed_x10):
+        if motor == 0:
+            motor_type = "flush"
+        elif motor == 1:
+            motor_type = "contrast"
+        else:
+            motor_type = "all"
+
+        print(f"Executing prime {motor_type}")
+        command = CommandMsg.PRIME_Command()
+        command.motor = motor
+        command.volume_x10 = volume_x10
+        command.speed_x10 = speed_x10
+        return self.mcu_transport.send_prime(command)

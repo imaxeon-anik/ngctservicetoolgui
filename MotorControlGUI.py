@@ -7,7 +7,8 @@ from threading import Thread
 
 from ServiceMotorController import MotorController
 
-class digest_thread(Thread):
+
+class DigestThread(Thread):
     def __init__(self, mcu):
         Thread.__init__(self)
         self.mcu = mcu
@@ -16,7 +17,10 @@ class digest_thread(Thread):
 
     def run(self):
         while True:
-            self.mcu.loop_digest()
+            # self.mcu.loop_digest(delay=0.1)
+            time.sleep(0.1)
+            self.mcu.do_digest()
+
 
 class MotorControllerApplication(tk.Frame):
     def __init__(self, master, mcu: MotorController, out_dir, verbose=False):
@@ -80,26 +84,27 @@ class MotorControllerApplication(tk.Frame):
 
         self._create_widgets()
         # self.master.after(20, self._update_binary_queue_timer)
-        self.master.after(100, self._do_digest)
+        # self.master.after(100, self._do_digest)
 
-    def loop_digest(self, delay: int = 0.5):
-        while True:
-            time.sleep(delay)
-            self._do_digest()
+    # def loop_digest(self, delay: int = 0.5):
+    #     while True:
+    #         time.sleep(delay)
+    #         self.do_digest()
 
     def _on_quit(self):
         # self._on_cycle_test_stop()
-        self.mcu.stop_monitor_reading_thread()
+        # self.mcu.stop_monitor_reading_thread()
         self.master.destroy()
 
-    def read_all_binary_queue_data(self):
-        samples = []
-        while len(self._binary_queue) > 0:
-            data = self._binary_queue.popleft()
-            samples.append(data)
-        return samples
+    # def read_all_binary_queue_data(self):
+    #     samples = []
+    #     while len(self._binary_queue) > 0:
+    #         data = self._binary_queue.popleft()
+    #         samples.append(data)
+    #     return samples
 
-    def s_push_c_pull(self, motor, speed_gap=10, start_pressure=50, max_pressure=1000, delta_pressure=200, stable_duration=1000):
+    def s_push_c_pull(self, motor, speed_gap=10, start_pressure=50, max_pressure=1000, delta_pressure=200,
+                      stable_duration=1000):
         self._do_digest()
 
         if (self.mcu.last_digest_data.flush_syringe_state or
@@ -160,12 +165,19 @@ class MotorControllerApplication(tk.Frame):
         # self._command_entry = tk.Entry(right_frame, textvariable=self._command_var, width=50)
         # self._command_entry.grid(row=0, column=0, columnspan=6)
 
-        tk.Button(right_frame, text="️S.Push,C.Pull", command=lambda: self.s_push_c_pull(0, 200, 50, 1000)).grid(row=2, column=0)
-        tk.Button(right_frame, text="C.Push,S.Pull", command=lambda: self.s_push_c_pull(1, 200, 50, 1000)).grid(row=2, column=1)
+        tk.Button(right_frame, text="️S.Push,C.Pull",
+                  command=lambda: self.s_push_c_pull(0, 200, 50, 1000)).grid(row=2, column=0)
+        tk.Button(right_frame, text="C.Push,S.Pull",
+                  command=lambda: self.s_push_c_pull(1, 200, 50, 1000)).grid(row=2, column=1)
 
         tk.Button(
             right_frame, text="Arm(6 phases)",
-            command=lambda: self.mcu.inject_arm(500, 6, 40, 50, 50, 200, 100, 50, 200, 0, 50, 200, 5, 50, 200, 95, 50, 200, 50, 50, 200, 0)
+            command=lambda: self.mcu.inject_arm(500, 6, 40, 50,
+                                                50, 200, 100,
+                                                50, 200, 0, 50,
+                                                200, 5, 50, 200,
+                                                95, 50, 200, 50,
+                                                50, 200, 0)
         ).grid(row=3, column=0)
         #
         tk.Button(
@@ -198,18 +210,33 @@ class MotorControllerApplication(tk.Frame):
         #
         tk.Button(
             right_frame, text="FCM CLOSED", fg="blue",
-            command=lambda: self.mcu.move_fcm(2, 2,2,2)
+            command=lambda: self.mcu.move_fcm(2, 2, 2, 2)
         ).grid(row=4, column=1)
         #
         tk.Button(
             right_frame, text="FCM OPEN", fg="blue",
-            command=lambda: self.mcu.move_fcm(3,3,3,3)
+            command=lambda: self.mcu.move_fcm(3, 3, 3, 3)
         ).grid(row=4, column=2)
 
         tk.Button(
-            right_frame, text = "Clear Digest",
+            right_frame, text="Clear Digest",
             command=lambda: self.clear_digest()
         ).grid(row=4, column=3)
+
+        tk.Button(
+            right_frame, text="Prime flush",
+            command=lambda: self.mcu.prime(0, 100, 100)
+        ).grid(row=4,column=4)
+
+        tk.Button(
+            right_frame, text="Prime contrast",
+            command=lambda: self.mcu.prime(1, 100, 100)
+        ).grid(row=4,column=5)
+
+        tk.Button(
+            right_frame, text="Prime all",
+            command=lambda: self.mcu.prime(2, 100, 100)
+        ).grid(row=4,column=6)
 
         # right command frame ---------------------------------------------
         speed_frame = tk.Frame(self, width=frame_width, height=frame_height)
@@ -220,8 +247,8 @@ class MotorControllerApplication(tk.Frame):
             command=lambda: self.mcu.stop(True)).grid(row=0, column=0)
 
         tk.Button(
-            left_frame, text="MCAL.S", fg="orange",
-            command=lambda: self.mcu.mcal(0 ,True)).grid(row=0, column=1)
+            left_frame, text="M_CAL.S", fg="orange",
+            command=lambda: self.mcu.m_cal(0, True)).grid(row=0, column=1)
 
         tk.Button(
             left_frame, text="⌂Home.S",
@@ -245,8 +272,8 @@ class MotorControllerApplication(tk.Frame):
         ).grid(row=0, column=5)
 
         tk.Button(
-            left_frame, text="MCAL.C", fg="orange",
-            command=lambda: self.mcu.mcal(1, True)).grid(row=1, column=1)
+            left_frame, text="M_CAL.C", fg="orange",
+            command=lambda: self.mcu.m_cal(1, True)).grid(row=1, column=1)
 
         tk.Button(
             left_frame, text="⌂Home.C",
@@ -291,16 +318,16 @@ class MotorControllerApplication(tk.Frame):
 
         tk.Button(
             left_frame, text="FILL.S",
-            command=lambda: self.mcu.fill(0, 10 * self._speed_var.get(), 10, True)
+            command=lambda: self.mcu.fill(0, 10 * self._speed_var.get(), 500, True)
         ).grid(row=0, column=8)
 
         tk.Button(
             left_frame, text="FILL.C",
-            command=lambda: self.mcu.fill(1, 10 * self._speed_var.get(), 10, True)
+            command=lambda: self.mcu.fill(1, 10 * self._speed_var.get(), 500, True)
         ).grid(row=1, column=8)
 
-
         # noinspection PyShadowingNames
+
         def create_entry(parent, text, text_var, row, col, entry_width=9, read_only=True):
             tk.Label(parent, text=text).grid(row=row, column=col, sticky=tk.E)
             if read_only:
@@ -345,8 +372,10 @@ class MotorControllerApplication(tk.Frame):
         create_dual_entries(syringe_frame, "Status", self.digest_flush_status_var, self.digest_contrast_status_var, 6,
                             0)
         # create_dual_entries(syringe_frame, "PID", self.digest_flush_PID_var, self.digest_contrast_PID_var, 7, 0)
-        # create_dual_entries(syringe_frame, "RT PID", self.digest_flush_RT_PID_var, self.digest_contrast_RT_PID_var, 8, 0)
-        # create_dual_entries(syringe_frame, "RT.Flow x100", self.digest_flush_actual_speed_var, self.digest_contrast_actual_speed_var, 9, 0)
+        # create_dual_entries(syringe_frame, "RT PID", self.digest_flush_RT_PID_var,
+        # self.digest_contrast_RT_PID_var, 8, 0)
+        # create_dual_entries(syringe_frame, "RT.Flow x100",
+        # self.digest_flush_actual_speed_var, self.digest_contrast_actual_speed_var, 9, 0)
 
         create_dual_entries(syringe_frame, "Flow(air)x100 ml/s", self.digest_flush_air_flow,
                             self.digest_contrast_air_flow, 7, 0)
@@ -355,13 +384,11 @@ class MotorControllerApplication(tk.Frame):
                             0)
 
     def _on_digest(self):
-        print(self._do_digest())
+        # print(self._do_digest())
         print(f"active_alarms: {self.digest_active_alarms.get()}")
         print(f"active_hardware: {self.digest_active_hardware_signals.get()}")
 
-
-
-    def _do_digest(self):
+    def do_digest(self):
         data = self.mcu.update_digest()
 
         self.digest_inject_progress_var.set(data.inject_progress)
@@ -403,42 +430,42 @@ class MotorControllerApplication(tk.Frame):
         return data
 
     def clear_digest(self):
-        self.digest_inject_progress_var.set(None)
-        self.digest_inject_complete_var.set(None)
-        self.digest_inject_pressure_var.set(None)
-        self.digest_flush_pressure_var.set(None)
-        self.digest_contrast_pressure_var.set(None)
+        self.digest_inject_progress_var.set("")
+        self.digest_inject_complete_var.set("")
+        self.digest_inject_pressure_var.set("")
+        self.digest_flush_pressure_var.set("")
+        self.digest_contrast_pressure_var.set("")
 
-        self.digest_contrast_status_var.set(None)
-        self.digest_contrast_volume_var.set(None)
-        self.digest_contrast_flow_var.set(None)
-        self.digest_contrast_current_var.set(None)
-        self.digest_contrast_plunger_var.set(None)
+        self.digest_contrast_status_var.set("")
+        self.digest_contrast_volume_var.set("")
+        self.digest_contrast_flow_var.set("")
+        self.digest_contrast_current_var.set("")
+        self.digest_contrast_plunger_var.set("")
 
-        self.digest_flush_status_var.set(None)
-        self.digest_flush_volume_var.set(None)
-        self.digest_flush_flow_var.set(None)
-        self.digest_flush_current_var.set(None)
-        self.digest_flush_plunger_var.set(None)
+        self.digest_flush_status_var.set("")
+        self.digest_flush_volume_var.set("")
+        self.digest_flush_flow_var.set("")
+        self.digest_flush_current_var.set("")
+        self.digest_flush_plunger_var.set("")
 
-        self.digest_flush_plunger_adc_var.set(None)
-        self.digest_contrast_plunger_adc_var.set(None)
+        self.digest_flush_plunger_adc_var.set("")
+        self.digest_contrast_plunger_adc_var.set("")
 
-        self.digest_power_source_var.set(None)
-        self.digest_diagnostic_var.set(None)
-        self.digest_battery_level_var.set(None)
-        self.digest_pressure_adc.set(None)
+        self.digest_power_source_var.set("")
+        self.digest_diagnostic_var.set("")
+        self.digest_battery_level_var.set("")
+        self.digest_pressure_adc.set("")
 
-        self.digest_flush_actual_speed_var.set(None)
-        self.digest_contrast_actual_speed_var.set(None)
+        self.digest_flush_actual_speed_var.set("")
+        self.digest_contrast_actual_speed_var.set("")
 
-        self.digest_flush_air_vol.set(None)
-        self.digest_contrast_air_vol.set(None)
+        self.digest_flush_air_vol.set("")
+        self.digest_contrast_air_vol.set("")
 
-        self.digest_flush_air_flow.set(None)
-        self.digest_contrast_air_flow.set(None)
-        self.digest_active_alarms.set(None)
-        self.digest_active_hardware_signals.set(None)
+        self.digest_flush_air_flow.set("")
+        self.digest_contrast_air_flow.set("")
+        self.digest_active_alarms.set("")
+        self.digest_active_hardware_signals.set("")
 
 
 def main(main_com: str, debug_com: str, output_dir: str):
@@ -451,10 +478,11 @@ def main(main_com: str, debug_com: str, output_dir: str):
     mcu.set_main_com_verbose(True)
     root = tk.Tk()
     app = MotorControllerApplication(root, mcu, output_dir)
-    d_thread = digest_thread(app)
+    DigestThread(app)
+
     def on_app_quit():
         print("WM_DELETE_WINDOW -> on_app_quit()")
-        mcu.stop_monitor_reading_thread()
+        # mcu.stop_monitor_reading_thread()
         root.destroy()
 
     # need to terminate the threads with stop_monitor_reading_thread()
@@ -469,8 +497,10 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='Salient EVO Motor controller UI')
-    parser.add_argument('--main_com', type=str, default="",  help='The FTDI USB serial COM port. Default find first FTDI COM')
-    parser.add_argument('--debug_com', type=str, default="", help='The USB serial COM port (for download speed). Default find the first USB device')
+    parser.add_argument('--main_com', type=str, default="",
+                        help='The FTDI USB serial COM port. Default find first FTDI COM')
+    parser.add_argument('--debug_com', type=str, default="",
+                        help='The USB serial COM port (for download speed). Default find the first USB device')
     parser.add_argument('--output_dir', type=str, default="./output", help='The output directory')
     parser.add_argument('--list', action='store_true', help='List the available serial com ports')
     args = parser.parse_args()
