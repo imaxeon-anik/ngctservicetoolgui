@@ -1,9 +1,11 @@
 import os
 import time
 import tkinter as tk
+import pandas as pd
+import matplotlib.pyplot as plt
 from collections import deque
 from threading import Thread
-
+import csv
 
 from ServiceMotorController import MotorController
 
@@ -13,13 +15,20 @@ class DigestThread(Thread):
         Thread.__init__(self)
         self.mcu = mcu
         self.daemon = True
+        self._stop = False
         self.start()
 
     def run(self):
         while True:
             # self.mcu.loop_digest(delay=0.1)
             time.sleep(0.1)
+            if self._stop:
+                self.join()
+                return
             self.mcu.do_digest()
+
+    def set_stop(self):
+        self._stop = True
 
 
 class MotorControllerApplication(tk.Frame):
@@ -80,16 +89,31 @@ class MotorControllerApplication(tk.Frame):
         if not os.path.exists(self.out_dir):
             os.mkdir(self.out_dir)
 
-        self._binary_queue = deque(maxlen=1000)
+        self.start_time = self.mcu.unix_timestamp()
+
+        # if len(log_filename) == 0:
+        #     # create MCU with the link name and current system timestamp
+        self.log_filename = self.mcu.get_filename_from_current_timestamp() + ".txt"
+        with open(self.log_filename, mode='a') as csv_file:
+            csv_file.write("flush_pressure,contrast_pressure,flush_adc,contrast_adc,"
+                           "flush_speed,contrast_speed,time, "
+                           "flush_actual_speed, contrast_actual_speed,"
+                           "flush_volume, contrast_volume, "
+                           "flush_flow, contrast_flow, "
+                           "flush_current, contrast_current, "
+                           ""
+                           "\n")
+        # else:
+        #     log_filename = os.path.join(self._output_dir, log_filename)
+        # self._log_file = open(log_filename, "w")
+        # print("Set output directory:", self.out_dir)
+        # print("MCU log filename", log_filename)
+
+        # self._binary_queue = deque(maxlen=1000)
 
         self._create_widgets()
         # self.master.after(20, self._update_binary_queue_timer)
         # self.master.after(100, self._do_digest)
-
-    # def loop_digest(self, delay: int = 0.5):
-    #     while True:
-    #         time.sleep(delay)
-    #         self.do_digest()
 
     def _on_quit(self):
         # self._on_cycle_test_stop()
@@ -105,7 +129,7 @@ class MotorControllerApplication(tk.Frame):
 
     def s_push_c_pull(self, motor, speed_gap=10, start_pressure=50, max_pressure=1000, delta_pressure=200,
                       stable_duration=1000):
-        self._do_digest()
+        self.do_digest()
 
         if (self.mcu.last_digest_data.flush_syringe_state or
                 self.mcu.last_digest_data.contrast_syringe_state):
@@ -161,6 +185,7 @@ class MotorControllerApplication(tk.Frame):
         right_frame = tk.LabelFrame(all_command_frame, width=frame_width, text="Custom Commands", height=frame_height)
         right_frame.grid(row=0, column=1, padx=10, pady=2, sticky='EW')
 
+
         # tk.Label(top_frame, text="Command:").grid(row=0, column=0)
         # self._command_entry = tk.Entry(right_frame, textvariable=self._command_var, width=50)
         # self._command_entry.grid(row=0, column=0, columnspan=6)
@@ -180,6 +205,11 @@ class MotorControllerApplication(tk.Frame):
                                                 50, 200, 0)
         ).grid(row=3, column=0)
         #
+        tk.Button(
+            right_frame, text="Plot data",
+            command=lambda: self.injector_plot()
+        ).grid(row=3,column=6)
+
         tk.Button(
             right_frame, text="Inject Start",
             command=lambda: self.mcu.inject_start()
@@ -226,17 +256,17 @@ class MotorControllerApplication(tk.Frame):
         tk.Button(
             right_frame, text="Prime flush",
             command=lambda: self.mcu.prime(0, 100, 100)
-        ).grid(row=4,column=4)
+        ).grid(row=4, column=4)
 
         tk.Button(
             right_frame, text="Prime contrast",
             command=lambda: self.mcu.prime(1, 100, 100)
-        ).grid(row=4,column=5)
+        ).grid(row=4, column=5)
 
         tk.Button(
             right_frame, text="Prime all",
             command=lambda: self.mcu.prime(2, 100, 100)
-        ).grid(row=4,column=6)
+        ).grid(row=4, column=6)
 
         # right command frame ---------------------------------------------
         speed_frame = tk.Frame(self, width=frame_width, height=frame_height)
@@ -326,6 +356,20 @@ class MotorControllerApplication(tk.Frame):
             command=lambda: self.mcu.fill(1, 10 * self._speed_var.get(), 500, True)
         ).grid(row=1, column=8)
 
+        tk.Button(
+            left_frame, text="Purge Flush",
+            command=lambda: self.mcu.purge(0, int(10*self._speed_var.get()), delta_pressure_in_kpa=30)
+        ).grid(row=2, column=1)
+
+        tk.Button(
+            left_frame, text="Purge Contrast",
+            command=lambda: self.mcu.purge(1, int(10*self._speed_var.get()), delta_pressure_in_kpa=30)
+        ).grid(row=2, column=2)
+
+        tk.Button(
+            left_frame, text="Purge All",
+            command=lambda: self.mcu.purge(2, int(10*self._speed_var.get()), delta_pressure_in_kpa=30)
+        ).grid(row=2, column=3)
         # noinspection PyShadowingNames
 
         def create_entry(parent, text, text_var, row, col, entry_width=9, read_only=True):
@@ -384,88 +428,118 @@ class MotorControllerApplication(tk.Frame):
                             0)
 
     def _on_digest(self):
-        # print(self._do_digest())
+        print(self.do_digest())
         print(f"active_alarms: {self.digest_active_alarms.get()}")
         print(f"active_hardware: {self.digest_active_hardware_signals.get()}")
 
     def do_digest(self):
-        data = self.mcu.update_digest()
+        try:
+            data = self.mcu.update_digest()
 
-        self.digest_inject_progress_var.set(data.inject_progress)
-        self.digest_inject_complete_var.set(data.inject_complete_state)
-        self.digest_inject_pressure_var.set(data.inject_pressure_kpa)
-        self.digest_flush_pressure_var.set(data.flush_pressure_kpa)
-        self.digest_contrast_pressure_var.set(data.contrast_pressure_kpa)
+            self.digest_inject_progress_var.set(data.inject_progress)
+            self.digest_inject_complete_var.set(data.inject_complete_state)
+            self.digest_inject_pressure_var.set(data.inject_pressure_kpa)
+            self.digest_flush_pressure_var.set(data.flush_pressure_kpa)
+            self.digest_contrast_pressure_var.set(data.contrast_pressure_kpa)
 
-        self.digest_contrast_status_var.set(self.mcu.syringe_status(data.contrast_syringe_state))
-        self.digest_contrast_volume_var.set(data.contrast_volume_x10)
-        self.digest_contrast_flow_var.set(data.contrast_flow_x100)
-        self.digest_contrast_current_var.set(data.contrast_motor_current_adc)
-        self.digest_contrast_plunger_var.set(self.mcu.plunger_status(data.contrast_plunger_state))
+            self.digest_contrast_status_var.set(self.mcu.syringe_status(data.contrast_syringe_state))
+            self.digest_contrast_volume_var.set(data.contrast_volume_x10)
+            self.digest_contrast_flow_var.set(data.contrast_flow_x100)
+            self.digest_contrast_current_var.set(data.contrast_motor_current_adc)
+            self.digest_contrast_plunger_var.set(self.mcu.plunger_status(data.contrast_plunger_state))
 
-        self.digest_flush_status_var.set(self.mcu.syringe_status(data.flush_syringe_state))
-        self.digest_flush_volume_var.set(data.flush_volume_x10)
-        self.digest_flush_flow_var.set(data.flush_flow_x100)
-        self.digest_flush_current_var.set(data.flush_motor_current_adc)
-        self.digest_flush_plunger_var.set(self.mcu.plunger_status(data.flush_plunger_state))
+            self.digest_flush_status_var.set(self.mcu.syringe_status(data.flush_syringe_state))
+            self.digest_flush_volume_var.set(data.flush_volume_x10)
+            self.digest_flush_flow_var.set(data.flush_flow_x100)
+            self.digest_flush_current_var.set(data.flush_motor_current_adc)
+            self.digest_flush_plunger_var.set(self.mcu.plunger_status(data.flush_plunger_state))
 
-        self.digest_flush_plunger_adc_var.set(data.flush_plunger_adc)
-        self.digest_contrast_plunger_adc_var.set(data.contrast_plunger_adc)
+            self.digest_flush_plunger_adc_var.set(data.flush_plunger_adc)
+            self.digest_contrast_plunger_adc_var.set(data.contrast_plunger_adc)
 
-        self.digest_power_source_var.set(data.power_source)
-        self.digest_diagnostic_var.set(data.mcu_diagnostic)
-        self.digest_battery_level_var.set(data.battery_level)
-        self.digest_pressure_adc.set(data.pressure_adc)
+            self.digest_power_source_var.set(data.power_source)
+            self.digest_diagnostic_var.set(data.mcu_diagnostic)
+            self.digest_battery_level_var.set(data.battery_level)
+            self.digest_pressure_adc.set(data.pressure_adc)
 
-        self.digest_flush_actual_speed_var.set(data.flush_actual_speed_x100)
-        self.digest_contrast_actual_speed_var.set(data.contrast_actual_speed_x100)
+            self.digest_flush_actual_speed_var.set(data.flush_actual_speed_x100)
+            self.digest_contrast_actual_speed_var.set(data.contrast_actual_speed_x100)
 
-        self.digest_flush_air_vol.set(data.flush_air_volume_x100)
-        self.digest_contrast_air_vol.set(data.contrast_air_volume_x100)
+            self.digest_flush_air_vol.set(data.flush_air_volume_x100)
+            self.digest_contrast_air_vol.set(data.contrast_air_volume_x100)
 
-        self.digest_flush_air_flow.set(data.flush_air_speed_x100)
-        self.digest_contrast_air_flow.set(data.contrast_air_speed_x100)
-        self.digest_active_alarms.set(self.mcu.find_alarm_bitmap(data.alarm_bitmap))
-        self.digest_active_hardware_signals.set(self.mcu.find_hardware_bitmap(data.alarm_bitmap))
+            self.digest_flush_air_flow.set(data.flush_air_speed_x100)
+            self.digest_contrast_air_flow.set(data.contrast_air_speed_x100)
+            self.digest_active_alarms.set(self.mcu.find_alarm_bitmap(data.alarm_bitmap))
+            self.digest_active_hardware_signals.set(self.mcu.find_hardware_bitmap(data.alarm_bitmap))
+        except:
+            print("", end='')
+            return
+
+        with open(self.log_filename, mode='a', newline='') as csv_file:
+            plot_writer = csv.writer(csv_file, delimiter=',')
+
+            plot_variables = [self.digest_flush_pressure_var.get(), self.digest_contrast_pressure_var.get(),
+                                  self.digest_flush_plunger_adc_var.get(), self.digest_contrast_plunger_adc_var.get(),
+                                  self.digest_flush_actual_speed_var.get(), self.digest_contrast_actual_speed_var.get(),
+                              self.mcu.unix_timestamp() - self.start_time]
+            plot_writer.writerow(plot_variables)
+
         return data
 
+
     def clear_digest(self):
-        self.digest_inject_progress_var.set("")
-        self.digest_inject_complete_var.set("")
-        self.digest_inject_pressure_var.set("")
-        self.digest_flush_pressure_var.set("")
-        self.digest_contrast_pressure_var.set("")
+        f = open(self.log_filename, "w+", newline='')
+        self.start_time = self.mcu.unix_timestamp()
+        f.write("flush_pressure,contrast_pressure,flush_adc,contrast_adc,flush_speed,contrast_speed,time\n")
+        f.close()
 
-        self.digest_contrast_status_var.set("")
-        self.digest_contrast_volume_var.set("")
-        self.digest_contrast_flow_var.set("")
-        self.digest_contrast_current_var.set("")
-        self.digest_contrast_plunger_var.set("")
+    def injector_plot(self):
+        df = pd.read_csv(self.log_filename)
+        df["flush_speed"] = df["flush_speed"] / 100
+        df["contrast_speed"] = df["contrast_speed"] / 100
+        df1 = pd.DataFrame(df, columns=['flush_pressure', 'contrast_pressure', 'time'])
+        df2 = pd.DataFrame(df, columns=['flush_speed', 'contrast_speed', 'time'])
+        df3 = pd.DataFrame(df, columns=['flush_adc', 'contrast_adc', 'time'])
+        fig, axes = plt.subplots(nrows=3, ncols=1, sharex=True)
 
-        self.digest_flush_status_var.set("")
-        self.digest_flush_volume_var.set("")
-        self.digest_flush_flow_var.set("")
-        self.digest_flush_current_var.set("")
-        self.digest_flush_plunger_var.set("")
+        # plt.grid()
+        # plt.show()
 
-        self.digest_flush_plunger_adc_var.set("")
-        self.digest_contrast_plunger_adc_var.set("")
+        ax1 = df1.plot("time", ax=axes[0])
+        ax1.set_ylabel("Pressure (kpa)")
+        ax1.grid()
 
-        self.digest_power_source_var.set("")
-        self.digest_diagnostic_var.set("")
-        self.digest_battery_level_var.set("")
-        self.digest_pressure_adc.set("")
+        ax2 = df2.plot("time", ax=axes[1])
+        ax2.set_ylabel("Speed (ml/s)")
+        ax2.grid()
 
-        self.digest_flush_actual_speed_var.set("")
-        self.digest_contrast_actual_speed_var.set("")
+        ax3 = df3.plot("time", ax=axes[2])
+        ax3.set_ylabel("ADC (V)")
+        ax3.grid()
 
-        self.digest_flush_air_vol.set("")
-        self.digest_contrast_air_vol.set("")
+        plt.show()
+    #     flush_pressure_index = 0
+    #     contrast_pressure_index = 1
+    #     flush_adc_index = 2
+    #     contrast_adc_index = 3
+    #     flush_speed_index = 4
+    #     contrast_speed_index = 5
+    #     time_index = 6
+    #
+    #     flush_pressure = []
+    #     contrast_pressure = []
+    #     seconds = []
+    #     with open(self.log_filename, mode='r') as csv_file:
+    #         file = csv.reader(csv_file)
+    #         for lines in file:
+    #             flush_pressure.append(int(lines[flush_pressure_index]))
+    #             contrast_pressure.append(int(lines[contrast_pressure_index]))
+    #             seconds.append(float(lines[time_index]))
 
-        self.digest_flush_air_flow.set("")
-        self.digest_contrast_air_flow.set("")
-        self.digest_active_alarms.set("")
-        self.digest_active_hardware_signals.set("")
+    #TODO
+
+
 
 
 def main(main_com: str, debug_com: str, output_dir: str):
@@ -478,11 +552,12 @@ def main(main_com: str, debug_com: str, output_dir: str):
     mcu.set_main_com_verbose(True)
     root = tk.Tk()
     app = MotorControllerApplication(root, mcu, output_dir)
-    DigestThread(app)
+    digest_thread = DigestThread(app)
 
     def on_app_quit():
         print("WM_DELETE_WINDOW -> on_app_quit()")
         # mcu.stop_monitor_reading_thread()
+        digest_thread.set_stop()
         root.destroy()
 
     # need to terminate the threads with stop_monitor_reading_thread()

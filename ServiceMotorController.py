@@ -142,6 +142,9 @@ class MotorController:
 
         self._monitor_port_name = debug_com
 
+    def unix_timestamp(self):
+        return (datetime.now() - datetime(1970, 1, 1)).total_seconds()
+
     def get_filename_from_current_timestamp(self, prefix="", postfix="", is_dir=False) -> str:
         """ Get an absolute filename from the current timestamp (yyyymmdd-hhmmss) with optional prefix or post-fix,
         if the name is a directory it will be created
@@ -745,3 +748,18 @@ class MotorController:
         command.volume_x10 = volume_x10
         command.speed_x10 = speed_x10
         return self.mcu_transport.send_prime(command)
+
+    def purge(self, motor, speed_x10, delta_pressure_in_kpa):
+        if motor == 0:
+            motor_type = "flush"
+        elif motor == 1:
+            motor_type = "contrast"
+        else:
+            motor_type = "all"
+
+        print(f"Executing purge {motor_type}")
+        command = CommandMsg.PURGE_Command()
+        command.motor = motor
+        command.speed_x10 = speed_x10
+        command.delta_pressure_in_kpa = delta_pressure_in_kpa
+        return self.mcu_transport.send_purge(command)
